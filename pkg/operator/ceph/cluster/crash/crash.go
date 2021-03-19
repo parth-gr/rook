@@ -26,6 +26,7 @@ import (
 	"github.com/rook/rook/pkg/operator/ceph/config"
 	"github.com/rook/rook/pkg/operator/ceph/config/keyring"
 	"github.com/rook/rook/pkg/operator/ceph/controller"
+	cephcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
 	"github.com/rook/rook/pkg/operator/ceph/version"
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	appsv1 "k8s.io/api/apps/v1"
@@ -113,6 +114,8 @@ func (r *ReconcileNode) createOrUpdateCephCrash(node corev1.Node, tolerations []
 				RestartPolicy: corev1.RestartPolicyAlways,
 				HostNetwork:   cephCluster.Spec.Network.IsHost(),
 				Volumes:       volumes,
+				// use service account "rook-ceph-default"
+				ServiceAccountName: cephcontroller.DefaultServiceAccount,
 			},
 		}
 

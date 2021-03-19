@@ -20,6 +20,8 @@ import (
 	"testing"
 
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
+	cephcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
+
 	rookclient "github.com/rook/rook/pkg/client/clientset/versioned/fake"
 	"github.com/rook/rook/pkg/client/clientset/versioned/scheme"
 	"github.com/rook/rook/pkg/clusterd"
@@ -136,4 +138,6 @@ func TestDeploymentSpec(t *testing.T) {
 		},
 	)
 	assert.Equal(t, "my-priority-class", d.Spec.Template.Spec.PriorityClassName)
+	assert.Equal(t, cephcontroller.DefaultServiceAccount, d.Spec.Template.Spec.ServiceAccountName)
+
 }

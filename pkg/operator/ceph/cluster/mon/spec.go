@@ -27,6 +27,7 @@ import (
 	"github.com/rook/rook/pkg/daemon/ceph/client"
 	"github.com/rook/rook/pkg/operator/ceph/config"
 	"github.com/rook/rook/pkg/operator/ceph/controller"
+	cephcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -182,6 +183,8 @@ func (c *Cluster) makeMonPod(monConfig *monConfig, canary bool) (*v1.Pod, error)
 		Volumes:           controller.DaemonVolumesBase(monConfig.DataPathMap, keyringStoreName),
 		HostNetwork:       c.spec.Network.IsHost(),
 		PriorityClassName: cephv1.GetMonPriorityClassName(c.spec.PriorityClassNames),
+		// use service account "rook-ceph-default"
+		ServiceAccountName: cephcontroller.DefaultServiceAccount,
 	}
 
 	// If the log collector is enabled we add the side-car container

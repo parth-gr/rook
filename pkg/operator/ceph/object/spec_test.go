@@ -22,6 +22,8 @@ import (
 
 	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
+	cephcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
+
 	"github.com/rook/rook/pkg/clusterd"
 	"github.com/rook/rook/pkg/daemon/ceph/client"
 	clienttest "github.com/rook/rook/pkg/daemon/ceph/client/test"
@@ -79,6 +81,7 @@ func TestPodSpecs(t *testing.T) {
 	assert.Equal(t,
 		getLabels(c.store.Name, c.store.Namespace, false),
 		s.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector.MatchLabels)
+	assert.Equal(t, cephcontroller.DefaultServiceAccount, s.Spec.ServiceAccountName)
 
 	podTemplate := test.NewPodTemplateSpecTester(t, &s)
 	podTemplate.RunFullSuite(cephconfig.RgwType, "default", "rook-ceph-rgw", "mycluster", "ceph/ceph:myversion",

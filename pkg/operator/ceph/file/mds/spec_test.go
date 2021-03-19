@@ -25,6 +25,8 @@ import (
 	"github.com/rook/rook/pkg/operator/k8sutil"
 
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
+	cephcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
+
 	"github.com/rook/rook/pkg/clusterd"
 	"github.com/rook/rook/pkg/daemon/ceph/client"
 	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
@@ -91,6 +93,7 @@ func TestPodSpecs(t *testing.T) {
 
 	assert.NotNil(t, d)
 	assert.Equal(t, v1.RestartPolicyAlways, d.Spec.Template.Spec.RestartPolicy)
+	assert.Equal(t, cephcontroller.DefaultServiceAccount, d.Spec.Template.Spec.ServiceAccountName)
 
 	// Deployment should have Ceph labels
 	test.AssertLabelsContainCephRequirements(t, d.ObjectMeta.Labels,
