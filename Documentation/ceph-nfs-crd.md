@@ -26,7 +26,11 @@ metadata:
   namespace: rook-ceph
 spec:
   rados:
-    # RADOS pool where NFS client recovery data is stored.
+    # RADOS pool where NFS client recovery data and per-daemon configs are
+    # stored. In this example the data pool for the "myfs" filesystem is used.
+    # If using the object store example, the data pool would be
+    # "my-store.rgw.buckets.data". Note that this has nothing to do with where
+    # exported CephFS' or objectstores live.
     pool: myfs-data0
     # RADOS namespace where NFS client recovery data is stored in the pool.
     namespace: nfs-ns
@@ -64,6 +68,12 @@ spec:
     #    memory: "1024Mi"
     # the priority class to set to influence the scheduler's pod preemption
     priorityClassName:
+```
+
+ You can enable the creation of NFS exports in the dashboard for a given cephfs or object gateway pool with the following command in the ceph-tools container:
+ 
+```yaml 
+ceph dashboard set-ganesha-clusters-rados-pool-namespace <your cluster name>:<the ganesha pool name>/<the ganesha namespace> 
 ```
 
 ## NFS Settings
