@@ -191,7 +191,7 @@ spec:
 func (m *CephManifestsV1_5) GetBlockSnapshotClass(snapshotClassName, reclaimPolicy string) string {
 	// Create a CSI driver snapshotclass
 	return `
-apiVersion: snapshot.storage.k8s.io/v1beta1
+apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
   name: ` + snapshotClassName + `
@@ -207,7 +207,7 @@ parameters:
 func (m *CephManifestsV1_5) GetFileStorageSnapshotClass(snapshotClassName, reclaimPolicy string) string {
 	// Create a CSI driver snapshotclass
 	return `
-apiVersion: snapshot.storage.k8s.io/v1beta1
+apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
   name: ` + snapshotClassName + `
