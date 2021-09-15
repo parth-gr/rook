@@ -339,6 +339,12 @@ metadata:
   labels:
     operator: rook
     storage-backend: ceph
+    app.kubernetes.io/name: rook-ceph
+    app.kubernetes.io/instance: rook-ceph
+    app.kubernetes.io/component: csi
+    app.kubernetes.io/part-of: rook-ceph
+    app.kubernetes.io/managed-by: rook-ceph-operator
+    app.kubernetes.io/created-by: rook-ceph-operator
 spec:
   selector:
     matchLabels:

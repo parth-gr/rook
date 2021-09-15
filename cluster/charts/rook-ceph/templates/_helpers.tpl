@@ -24,3 +24,15 @@ imagePullSecrets:
 {{ toYaml .Values.imagePullSecrets }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Common labels
+*/}}
+{{- define "rook-ceph.labels" -}}
+app.kubernetes.io/name: rook-ceph
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: csi
+app.kubernetes.io/part-of: rook-ceph
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/created-by: rook-ceph-operator
+{{- end -}}
