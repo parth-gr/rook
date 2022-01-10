@@ -669,6 +669,12 @@ type MirrorHealthCheckSpec struct {
 	// +optional
 	// +nullable
 	Mirror HealthCheckSpec `json:"mirror,omitempty"`
+	// +optional
+	LivenessProbe *ProbeSpec `json:"livenessProbe,omitempty"`
+	// +optional
+	ReadinessProbe *ProbeSpec `json:"readinessProbe,omitempty"`
+	// +optional
+	StartupProbe *ProbeSpec `json:"startupProbe,omitempty"`
 }
 
 // CephBlockPoolStatus represents the mirroring status of Ceph Storage Pool

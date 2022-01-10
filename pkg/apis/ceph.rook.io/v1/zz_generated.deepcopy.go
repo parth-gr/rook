@@ -2425,6 +2425,21 @@ func (in *MgrSpec) DeepCopy() *MgrSpec {
 func (in *MirrorHealthCheckSpec) DeepCopyInto(out *MirrorHealthCheckSpec) {
 	*out = *in
 	in.Mirror.DeepCopyInto(&out.Mirror)
+	if in.LivenessProbe != nil {
+		in, out := &in.LivenessProbe, &out.LivenessProbe
+		*out = new(ProbeSpec)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.ReadinessProbe != nil {
+		in, out := &in.ReadinessProbe, &out.ReadinessProbe
+		*out = new(ProbeSpec)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.StartupProbe != nil {
+		in, out := &in.StartupProbe, &out.StartupProbe
+		*out = new(ProbeSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	return
 }
 

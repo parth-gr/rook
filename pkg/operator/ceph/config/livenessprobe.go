@@ -32,7 +32,6 @@ func ConfigureLivenessProbe(daemon cephv1.KeyType, container v1.Container, healt
 		cephv1.KeyMon: cephv1.GetMonLivenessProbe,
 		cephv1.KeyMgr: cephv1.GetMgrLivenessProbe,
 		cephv1.KeyOSD: cephv1.GetOSDLivenessProbe,
-		cephv1.KeyMds: cephv1.GetMdsLivenessProbe,
 	}
 
 	if _, ok := healthCheck.LivenessProbe[daemon]; ok {
@@ -58,7 +57,6 @@ func ConfigureStartupProbe(daemon cephv1.KeyType, container v1.Container, health
 		cephv1.KeyMon: cephv1.GetMonStartupProbe,
 		cephv1.KeyMgr: cephv1.GetMgrStartupProbe,
 		cephv1.KeyOSD: cephv1.GetOSDStartupProbe,
-		cephv1.KeyMds: cephv1.GetMdsStartupProbe,
 	}
 
 	if _, ok := healthCheck.StartupProbe[daemon]; ok {

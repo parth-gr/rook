@@ -24,6 +24,7 @@ import (
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
 	"github.com/rook/rook/pkg/clusterd"
 	"github.com/rook/rook/pkg/operator/ceph/config"
+	cephconfig "github.com/rook/rook/pkg/operator/ceph/config"
 	"github.com/rook/rook/pkg/operator/ceph/controller"
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	apps "k8s.io/api/apps/v1"
@@ -44,8 +45,8 @@ const (
 func (c *Cluster) makeDeployment(mdsConfig *mdsConfig, namespace string) (*apps.Deployment, error) {
 
 	mdsContainer := c.makeMdsDaemonContainer(mdsConfig)
-	mdsContainer = config.ConfigureStartupProbe(cephv1.KeyMds, mdsContainer, c.clusterSpec.HealthCheck)
-	mdsContainer = config.ConfigureLivenessProbe(cephv1.KeyMds, mdsContainer, c.clusterSpec.HealthCheck)
+	configureStartupProbe(&mdsContainer, c.fs.Spec.StatusCheck)
+	configureLivenessProbe(&mdsContainer, c.fs.Spec.StatusCheck)
 
 	podSpec := v1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
@@ -201,4 +202,35 @@ func scaleMdsDeployment(ctx context.Context, clusterdContext *clusterd.Context, 
 		return errors.Wrapf(err, "failed to scale mds deployment %s to %d replicas", deployment.GetName(), replicas)
 	}
 	return nil
+}
+
+// configureLivenessProbe returns the desired liveness probe for a given daemon
+func configureLivenessProbe(container *v1.Container, healthCheck cephv1.MirrorHealthCheckSpec) {
+	if ok := healthCheck.LivenessProbe; ok != nil {
+		if !healthCheck.LivenessProbe.Disabled {
+			probe := healthCheck.LivenessProbe.Probe
+			// If the spec value is empty, let's use a default
+			if probe != nil {
+				// Set the liveness probe on the container to overwrite the default probe created by Rook
+				container.LivenessProbe = cephconfig.GetProbeWithDefaults(probe, container.LivenessProbe)
+			}
+		} else {
+			container.LivenessProbe = nil
+		}
+	}
+}
+
+func configureStartupProbe(container *v1.Container, healthCheck cephv1.MirrorHealthCheckSpec) {
+	if ok := healthCheck.StartupProbe; ok != nil {
+		if !healthCheck.StartupProbe.Disabled {
+			probe := healthCheck.StartupProbe.Probe
+			// If the spec value is empty, let's use a default
+			if probe != nil {
+				// Set the startup probe on the container to overwrite the default probe created by Rook
+				container.StartupProbe = cephconfig.GetProbeWithDefaults(probe, container.StartupProbe)
+			}
+		} else {
+			container.StartupProbe = nil
+		}
+	}
 }
