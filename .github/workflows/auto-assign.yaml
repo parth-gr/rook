@@ -1,0 +1,46 @@
+name: contributor-auto-assign
+on: issue_comment
+
+# defaults:
+#   run:
+#     # reference: https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#using-a-specific-shell
+#     shell: bash --noprofile --norc -eo pipefail -x {0}
+
+jobs:
+  assign:
+    if: ${{ github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run self assign job
+        run: |
+          BODY=${{ github.event.comment.body }}
+          ISSUE_NUMBER=${{ github.event.issue.number }}
+          LOGIN=${{ github.event.comment.user.login }}
+          REPO=${{ github.event.repository.full_name }}
+          ISSUE_JSON=${{ github.event.issue }}
+          ISSUE_CURRENTLY_ASSIGNED=`echo $ISSUE_JSON | jq '.assignees | length == 0'`
+          echo aaa
+          jq -n -r --arg body "$INPUT_MESSAGE" '{body: $body}' > payload.json
+          curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" --data @payload.json https://api.github.com/repos/$REPO/pull/10492/comments
+
+          # if [[ $BODY == *"$INPUT_TRIGGER"* ]]; then
+          #   if [[ "$ISSUE_CURRENTLY_ASSIGNED" == true ]]; then
+          #     echo "Assigning issue $ISSUE_NUMBER to $LOGIN"
+          #     curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -d '{"assignees":["'"$LOGIN"'"]}' https://api.github.com/repos/$REPO/issues/$ISSUE_NUMBER/assignees
+          #     if [[ ! -z $INPUT_MESSAGE ]]; then
+          #       jq -n -r --arg body "$INPUT_MESSAGE" '{body: $body}' > payload.json
+          #       curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" --data @payload.json https://api.github.com/repos/$REPO/issues/$ISSUE_NUMBER/comments
+          #     fi
+          #   else
+          #     echo "This issue is currently assigned to a different user"
+          #     if [[ ! -z $ISSUE_CURRENTLY_ASSIGNED_MESSAGE ]]; then
+          #     jq -n -r --arg body "$ISSUE_CURRENTLY_ASSIGNED_MESSAGE" '{body: $body}' > payload.json
+          #     curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" --data @payload.json https://api.github.com/repos/$REPO/issues/$ISSUE_NUMBER/comments
+          #     fi
+          #   fi
+          # fi
+        shell: bash
+        env:
+          INPUT_MESSAGE: "Thanks for taking this issue! Let us know if you have any questions!"
+          INPUT_TRIGGER: "/assign"
+          ISSUE_CURRENTLY_ASSIGNED_MESSAGE: "The issue you are trying to assign to yourself is already assigned."
