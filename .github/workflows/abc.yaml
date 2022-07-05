@@ -1,0 +1,28 @@
+on: issue_comment
+
+jobs:
+  pr_commented:
+    # This job only runs for pull request comments
+    name: PR comment
+    if: ${{ github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo A comment on PR $NUMBER
+          jq -n -r --arg body "$INPUT_MESSAGE" '{body: $body}' > payload.json
+          curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" --data @payload.json https://api.github.com/repos/$REPO/pull/10492/comments
+        env:
+          NUMBER: ${{ github.event.issue.number }}
+
+  issue_commented:
+    # This job only runs for issue comments
+    name: Issue comment
+    if: ${{ !github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo A comment on issue $NUMBER
+          jq -n -r --arg body "$INPUT_MESSAGE" '{body: $body}' > payload.json
+          curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" --data @payload.json https://api.github.com/repos/$REPO/pull/10492/comments
+        env:
+          NUMBER: ${{ github.event.issue.number }}
