@@ -71,7 +71,11 @@ func CreateTempFile(content string) (*os.File, error) {
 	}
 
 	// Write content into file
+<<<<<<< HEAD
 	err = ioutil.WriteFile(file.Name(), []byte(content), 0440)
+=======
+	err = os.WriteFile(file.Name(), []byte(content), 0400)
+>>>>>>> 8e317ee07 (ci: update golangci-lint version as it fails for some k8s version in 1.10)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to write content into file")
 	}

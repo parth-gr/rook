@@ -87,7 +87,11 @@ func TestGetTcmallocMaxTotalThreadCacheBytes(t *testing.T) {
 	assert.Equal(t, "67108864", v.Value)
 
 	// Read the file now
+<<<<<<< HEAD
 	err = ioutil.WriteFile(file.Name(), sysconfig, 0444)
+=======
+	err = os.WriteFile(file.Name(), sysconfig, 0400)
+>>>>>>> 8e317ee07 (ci: update golangci-lint version as it fails for some k8s version in 1.10)
 	assert.NoError(t, err)
 	v = getTcmallocMaxTotalThreadCacheBytes("")
 	assert.Equal(t, "134217728", v.Value)
