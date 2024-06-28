@@ -113,6 +113,12 @@ spec:
             - "--controllerserver=true"
             - "--drivername={{ .DriverNamePrefix }}nfs.csi.ceph.com"
             - "--pidlimit=-1"
+            {{ if .CSILogRotation }}
+            - "--logtostderr=false"
+            - "--alsologtostderr=true"
+            - "--log_file={{ .CsiLogDirPath }}/{{
+.CephClusterNamespace }}/cephcsi/log/nfs-provisioner/csi-nfsplugin.log"
+            {{ end }}
           env:
             - name: POD_IP
               valueFrom:
@@ -143,6 +149,11 @@ spec:
               mountPath: /etc/ceph-csi-config/
             - name: keys-tmp-dir
               mountPath: /tmp/csi/keys
+            {{ if .CSILogRotation }}
+            - mountPath: {{ .CsiLogDirPath }}/{{
+.CephClusterNamespace }}/cephcsi/log/nfs-provisioner
+              name: csi-log
+            {{ end }}
             {{ if .MountCustomCephConf }}
             - name: ceph-config
               mountPath: /etc/ceph/ceph.conf
@@ -172,6 +183,16 @@ spec:
           emptyDir: {
             medium: "Memory"
           }
+        {{ if .CSILogRotation }}
+        - name: csi-log
+          hostPath:
+            path: {{ .CsiLogDirPath }}/{{
+.CephClusterNamespace }}/cephcsi/log/nfs-provisioner
+            type: DirectoryOrCreate
+        - name: csi-logs-logrotate
+          emptyDir:
+            type: DirectoryOrCreate
+        {{ end }}
         {{ if .MountCustomCephConf }}
         - name: ceph-config
           configMap:

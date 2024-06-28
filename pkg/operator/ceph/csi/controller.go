@@ -310,6 +310,7 @@ func setCSILogrotateParams(cephClustersItems []cephv1.CephCluster) {
 	for _, cluster := range cephClustersItems {
 		if cluster.Spec.LogCollector.Enabled {
 			spec = cluster.Spec
+			CSIParam.CephClusterNamespace = cluster.Namespace
 			break
 		}
 	}
