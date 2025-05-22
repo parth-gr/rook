@@ -86,7 +86,6 @@ func TestHostTree(t *testing.T) {
 	tree, err = HostTree(&clusterd.Context{Executor: executor}, AdminTestClusterInfo("mycluster"))
 	assert.Error(t, err)
 	assert.Equal(t, 0, len(tree.Nodes))
-
 }
 
 func TestOsdListNum(t *testing.T) {
@@ -139,6 +138,18 @@ func TestOSDDeviceClasses(t *testing.T) {
 		_, err := OSDDeviceClasses(context, clusterInfo, []string{})
 		assert.Error(t, err)
 	})
+}
+
+func TestConvertKibibytesToTebibytes(t *testing.T) {
+	kib := "1024"
+	terabyte, err := convertKibibytesToTebibytes(kib)
+	assert.NoError(t, err)
+	assert.Equal(t, float64(9.5367431640625e-07), terabyte)
+
+	kib = "1073741824"
+	terabyte, err = convertKibibytesToTebibytes(kib)
+	assert.NoError(t, err)
+	assert.Equal(t, float64(1), terabyte)
 }
 
 func TestOSDOkToStop(t *testing.T) {

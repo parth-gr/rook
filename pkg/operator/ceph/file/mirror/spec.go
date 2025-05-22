@@ -46,6 +46,7 @@ func (r *ReconcileFilesystemMirror) makeDeployment(daemonConfig *daemonConfig, f
 			Volumes:            controller.DaemonVolumes(daemonConfig.DataPathMap, daemonConfig.ResourceName, r.cephClusterSpec.DataDirHostPath),
 			HostNetwork:        r.cephClusterSpec.Network.IsHost(),
 			PriorityClassName:  fsMirror.Spec.PriorityClassName,
+			SecurityContext:    &v1.PodSecurityContext{},
 			ServiceAccountName: k8sutil.DefaultServiceAccount,
 		},
 	}
@@ -54,7 +55,7 @@ func (r *ReconcileFilesystemMirror) makeDeployment(daemonConfig *daemonConfig, f
 	if r.cephClusterSpec.LogCollector.Enabled {
 		shareProcessNamespace := true
 		podSpec.Spec.ShareProcessNamespace = &shareProcessNamespace
-		podSpec.Spec.Containers = append(podSpec.Spec.Containers, *controller.LogCollectorContainer(fmt.Sprintf("ceph-%s", user), r.clusterInfo.Namespace, *r.cephClusterSpec))
+		podSpec.Spec.Containers = append(podSpec.Spec.Containers, *controller.LogCollectorContainer(fmt.Sprintf("ceph-%s", user), r.clusterInfo.Namespace, *r.cephClusterSpec, nil))
 	}
 
 	// Replace default unreachable node toleration
@@ -77,8 +78,10 @@ func (r *ReconcileFilesystemMirror) makeDeployment(daemonConfig *daemonConfig, f
 			Name:        daemonConfig.ResourceName,
 			Namespace:   fsMirror.Namespace,
 			Annotations: fsMirror.Spec.Annotations,
-			Labels:      controller.CephDaemonAppLabels(AppName, fsMirror.Namespace, config.FilesystemMirrorType, userID, fsMirror.Name, "cephfilesystemmirrors.ceph.rook.io", true)},
+			Labels:      controller.CephDaemonAppLabels(AppName, fsMirror.Namespace, config.FilesystemMirrorType, userID, fsMirror.Name, "cephfilesystemmirrors.ceph.rook.io", true),
+		},
 		Spec: apps.DeploymentSpec{
+			RevisionHistoryLimit: controller.RevisionHistoryLimit(),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: podSpec.Labels,
 			},

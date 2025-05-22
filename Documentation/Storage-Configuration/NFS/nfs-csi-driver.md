@@ -36,8 +36,7 @@ will expose the exports. RGWs cannot be used for the CSI driver.
 From the examples, `filesystem.yaml` creates a CephFilesystem called `myfs`, and `nfs.yaml` creates
 an NFS server called `my-nfs`.
 
-You may need to enable or disable the Ceph orchestrator. Follow the same steps documented
-[above](#enable-the-ceph-orchestrator-if-necessary) based on your Ceph version and desires.
+You may need to enable or disable the Ceph orchestrator.
 
 You must also create a storage class. Ceph CSI is designed to support any arbitrary Ceph cluster,
 but we are focused here only on Ceph clusters deployed by Rook. Let's take a look at a portion of
@@ -69,14 +68,14 @@ parameters:
 ```
 
 1. `provisioner`: **rook-ceph**.nfs.csi.ceph.com because **rook-ceph** is the namespace where the
-   CephCluster is installed
+    CephCluster is installed
 2. `nfsCluster`: **my-nfs** because this is the name of the CephNFS
 3. `server`: rook-ceph-nfs-**my-nfs**-a because Rook creates this Kubernetes Service for the CephNFS
-   named **my-nfs**
+    named **my-nfs**
 4. `clusterID`: **rook-ceph** because this is the namespace where the CephCluster is installed
 5. `fsName`: **myfs** because this is the name of the CephFilesystem used to back the NFS exports
 6. `pool`: **myfs**-**replicated** because **myfs** is the name of the CephFilesystem defined in
-   `fsName` and because **replicated** is the name of a data pool defined in the CephFilesystem
+    `fsName` and because **replicated** is the name of a data pool defined in the CephFilesystem
 7. `csi.storage.k8s.io/*`: note that these values are shared with the Ceph CSI CephFS provisioner
 
 ### Creating a PVC
@@ -194,11 +193,11 @@ kubectl create -f deploy/examples/csi/nfs/pvc-clone.yaml
 kubectl get pvc
 ```
 
->```
->NAME              STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
->nfs-pvc           Bound    pvc-1ea51547-a88b-4ab0-8b4a-812caeaf025d   1Gi        RWX            rook-nfs       39m
->nfs-pvc-clone     Bound    pvc-b575bc35-d521-4c41-b4f9-1d733cd28fdf   1Gi        RWX            rook-nfs       8s
->```
+```console
+NAME              STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+nfs-pvc           Bound    pvc-1ea51547-a88b-4ab0-8b4a-812caeaf025d   1Gi        RWX            rook-nfs       39m
+nfs-pvc-clone     Bound    pvc-b575bc35-d521-4c41-b4f9-1d733cd28fdf   1Gi        RWX            rook-nfs       8s
+```
 
 ### Cleaning up clone resources
 
@@ -207,3 +206,16 @@ To clean your cluster of the resources created by this example, run the followin
 ```console
 kubectl delete -f deploy/examples/csi/nfs/pvc-clone.yaml
 ```
+
+## Consuming NFS from an external source
+
+For consuming NFS services and exports external to the Kubernetes cluster (including those backed by an external standalone Ceph cluster), Rook recommends using Kubernetes regular NFS consumption model. This requires the Ceph admin to create the needed export, while reducing the privileges needed in the client cluster for the NFS volume.
+
+Export and get the nfs client to a particular cephFS filesystem:
+
+```yaml
+ceph nfs export create cephfs <nfs-client-name> /test <filesystem-name>
+ceph nfs export get <service> <export-name>
+```
+
+Create the [PV and PVC](https://github.com/kubernetes/examples/tree/master/staging/volumes/nfs) using `nfs-client-server-ip`. It will mount NFS volumes with PersistentVolumes and then mount the PVCs in the [user Pod Application](https://kubernetes.io/docs/concepts/storage/volumes/#nfs) to utilize the NFS type storage.

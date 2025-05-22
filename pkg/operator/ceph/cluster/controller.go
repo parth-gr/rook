@@ -21,8 +21,10 @@ import (
 	"context"
 	"fmt"
 
+	csiopv1a1 "github.com/ceph/ceph-csi-operator/api/v1alpha1"
 	"github.com/coreos/pkg/capnslog"
-	addonsv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/apis/csiaddons/v1alpha1"
+	addonsv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/csiaddons/v1alpha1"
+
 	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
 	"github.com/rook/rook/pkg/clusterd"
@@ -99,16 +101,17 @@ type ReconcileCephCluster struct {
 	context           *clusterd.Context
 	clusterController *ClusterController
 	opManagerContext  context.Context
+	opConfig          opcontroller.OperatorConfig
 }
 
 // Add creates a new CephCluster Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-func Add(mgr manager.Manager, ctx *clusterd.Context, clusterController *ClusterController, opManagerContext context.Context) error {
-	return add(opManagerContext, mgr, newReconciler(mgr, ctx, clusterController, opManagerContext), ctx)
+func Add(mgr manager.Manager, ctx *clusterd.Context, clusterController *ClusterController, opManagerContext context.Context, opConfig opcontroller.OperatorConfig) error {
+	return add(opManagerContext, mgr, newReconciler(mgr, ctx, clusterController, opManagerContext, opConfig), ctx, opConfig)
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager, ctx *clusterd.Context, clusterController *ClusterController, opManagerContext context.Context) reconcile.Reconciler {
+func newReconciler(mgr manager.Manager, ctx *clusterd.Context, clusterController *ClusterController, opManagerContext context.Context, opConfig opcontroller.OperatorConfig) reconcile.Reconciler {
 	// add "rook-" prefix to the controller name to make sure it is clear to all reading the events
 	// that they are coming from Rook. The controller name already has context that it is for Ceph
 	// and from the cluster controller.
@@ -118,12 +121,28 @@ func newReconciler(mgr manager.Manager, ctx *clusterd.Context, clusterController
 		client:            mgr.GetClient(),
 		scheme:            mgr.GetScheme(),
 		context:           ctx,
+		opConfig:          opConfig,
 		clusterController: clusterController,
 		opManagerContext:  opManagerContext,
 	}
 }
 
-func add(opManagerContext context.Context, mgr manager.Manager, r reconcile.Reconciler, context *clusterd.Context) error {
+func watchOwnedCoreObject[T client.Object](c controller.Controller, mgr manager.Manager, obj T) error {
+	return c.Watch(
+		source.Kind(
+			mgr.GetCache(),
+			obj,
+			handler.TypedEnqueueRequestForOwner[T](
+				mgr.GetScheme(),
+				mgr.GetRESTMapper(),
+				&cephv1.CephCluster{},
+			),
+			opcontroller.WatchPredicateForNonCRDObject[T](&cephv1.CephCluster{TypeMeta: ControllerTypeMeta}, mgr.GetScheme()),
+		),
+	)
+}
+
+func add(opManagerContext context.Context, mgr manager.Manager, r reconcile.Reconciler, context *clusterd.Context, opConfig opcontroller.OperatorConfig) error {
 	// Create a new controller
 	c, err := controller.New(controllerName, mgr, controller.Options{Reconciler: r})
 	if err != nil {
@@ -136,29 +155,27 @@ func add(opManagerContext context.Context, mgr manager.Manager, r reconcile.Reco
 		return err
 	}
 
+	err = csiopv1a1.AddToScheme(mgr.GetScheme())
+	if err != nil {
+		return err
+	}
+
 	// Watch for changes on the CephCluster CR object
-	s := source.Kind(mgr.GetCache(),
-		&cephv1.CephCluster{
-			TypeMeta: ControllerTypeMeta,
-		})
 	err = c.Watch(
-		s,
-		&handler.EnqueueRequestForObject{},
-		watchControllerPredicate(opManagerContext, mgr.GetClient()))
+		source.Kind(
+			mgr.GetCache(),
+			&cephv1.CephCluster{TypeMeta: ControllerTypeMeta},
+			&handler.TypedEnqueueRequestForObject[*cephv1.CephCluster]{},
+			watchControllerPredicate(opManagerContext, mgr.GetClient()),
+		),
+	)
 	if err != nil {
 		return err
 	}
 
 	// Watch all other resources of the Ceph Cluster
 	for _, t := range objectsToWatch {
-		err = c.Watch(
-			source.Kind(mgr.GetCache(), t),
-			handler.EnqueueRequestForOwner(
-				mgr.GetScheme(),
-				mgr.GetRESTMapper(),
-				&cephv1.CephCluster{},
-			),
-			opcontroller.WatchPredicateForNonCRDObject(&cephv1.CephCluster{TypeMeta: ControllerTypeMeta}, mgr.GetScheme()))
+		err = watchOwnedCoreObject(c, mgr, t)
 		if err != nil {
 			return err
 		}
@@ -166,46 +183,52 @@ func add(opManagerContext context.Context, mgr manager.Manager, r reconcile.Reco
 
 	// Build Handler function to return the list of ceph clusters
 	// This is used by the watchers below
-	handlerFunc, err := opcontroller.ObjectToCRMapper(opManagerContext, mgr.GetClient(), &cephv1.CephClusterList{}, mgr.GetScheme())
+	nodeHandler, err := opcontroller.ObjectToCRMapper[*cephv1.CephClusterList, *corev1.Node](
+		opManagerContext,
+		mgr.GetClient(),
+		&cephv1.CephClusterList{},
+		mgr.GetScheme(),
+	)
 	if err != nil {
 		return err
 	}
 
 	// Watch for nodes additions and updates
-	nodeKind := source.Kind(mgr.GetCache(),
-		&corev1.Node{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "Node",
-				APIVersion: corev1.SchemeGroupVersion.String(),
-			},
-		})
 	err = c.Watch(
-		nodeKind,
-		handler.EnqueueRequestsFromMapFunc(handlerFunc),
-		predicateForNodeWatcher(opManagerContext, mgr.GetClient(), context))
+		source.Kind(
+			mgr.GetCache(),
+			&corev1.Node{TypeMeta: metav1.TypeMeta{Kind: "Node", APIVersion: corev1.SchemeGroupVersion.String()}},
+			handler.TypedEnqueueRequestsFromMapFunc(nodeHandler),
+			predicateForNodeWatcher(opManagerContext, mgr.GetClient(), context, opConfig.OperatorNamespace),
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	cmHandler, err := opcontroller.ObjectToCRMapper[*cephv1.CephClusterList, *corev1.ConfigMap](
+		opManagerContext,
+		mgr.GetClient(),
+		&cephv1.CephClusterList{},
+		mgr.GetScheme(),
+	)
 	if err != nil {
 		return err
 	}
 
 	// Watch for changes on the hotplug config map
 	// TODO: to improve, can we run this against the operator namespace only?
-	disableVal, err := k8sutil.GetOperatorSetting(opManagerContext, context.Clientset, opcontroller.OperatorSettingConfigMapName, disableHotplugEnv, "false")
-	if err != nil {
-		logger.Errorf("failed to get %s setting %s. %v", disableHotplugEnv, opcontroller.OperatorSettingConfigMapName, err)
-	}
+	disableVal := k8sutil.GetOperatorSetting(disableHotplugEnv, "false")
 	if disableVal != "true" {
 		logger.Info("enabling hotplug orchestration")
-		s := source.Kind(mgr.GetCache(),
-			&corev1.ConfigMap{
-				TypeMeta: metav1.TypeMeta{
-					Kind:       "ConfigMap",
-					APIVersion: corev1.SchemeGroupVersion.String(),
-				},
-			})
 		err = c.Watch(
-			s,
-			handler.EnqueueRequestsFromMapFunc(handlerFunc),
-			predicateForHotPlugCMWatcher(mgr.GetClient()))
+			source.Kind(
+				mgr.GetCache(),
+				&corev1.ConfigMap{TypeMeta: metav1.TypeMeta{Kind: "ConfigMap", APIVersion: corev1.SchemeGroupVersion.String()}},
+				handler.TypedEnqueueRequestsFromMapFunc(cmHandler),
+				predicateForHotPlugCMWatcher(mgr.GetClient()),
+			),
+		)
 		if err != nil {
 			return err
 		}
@@ -251,9 +274,13 @@ func (r *ReconcileCephCluster) reconcile(request reconcile.Request) (reconcile.R
 	}
 
 	// Set a finalizer so we can do cleanup before the object goes away
-	err = opcontroller.AddFinalizerIfNotPresent(r.opManagerContext, r.client, cephCluster)
+	generationUpdated, err := opcontroller.AddFinalizerIfNotPresent(r.opManagerContext, r.client, cephCluster)
 	if err != nil {
 		return reconcile.Result{}, *cephCluster, errors.Wrap(err, "failed to add finalizer")
+	}
+	if generationUpdated {
+		logger.Infof("reconciling the ceph cluster %q after adding finalizer", cephCluster.Name)
+		return reconcile.Result{}, *cephCluster, nil
 	}
 
 	// DELETE: the CR was deleted
@@ -505,20 +532,18 @@ func (c *ClusterController) checkPVPresentInCluster(drivers []string, clusterID 
 			continue
 		}
 		if p.Spec.CSI.VolumeAttributes["clusterID"] == clusterID {
-			//check PV is created by drivers deployed by rook
+			// check PV is created by drivers deployed by rook
 			for _, d := range drivers {
 				if d == p.Spec.CSI.Driver {
 					return true, nil
 				}
 			}
-
 		}
 	}
 	return false, nil
 }
 
 func (r *ReconcileCephCluster) removeFinalizers(client client.Client, clusterName types.NamespacedName) error {
-
 	// Remove finalizer for rook-ceph-mon secret
 	name := types.NamespacedName{Name: mon.AppName, Namespace: clusterName.Namespace}
 	err := r.removeFinalizer(client, name, &corev1.Secret{}, mon.DisasterProtectionFinalizerName)

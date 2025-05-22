@@ -44,9 +44,9 @@ func (c *Cluster) createService(mon *monConfig) (*v1.Service, error) {
 
 	// If the mon port was not msgr2, add the msgr1 port
 	if mon.Port != DefaultMsgr2Port {
-		addServicePort(svcDef, "tcp-msgr1", mon.Port)
+		addServicePort(svcDef, DefaultMsgr1PortName, mon.Port)
 	}
-	addServicePort(svcDef, "tcp-msgr2", DefaultMsgr2Port)
+	addServicePort(svcDef, DefaultMsgr2PortName, DefaultMsgr2Port)
 
 	// Set the ClusterIP if the service does not exist and we expect a certain cluster IP
 	// For example, in disaster recovery the service might have been deleted accidentally, but we have the
@@ -74,16 +74,16 @@ func (c *Cluster) createService(mon *monConfig) (*v1.Service, error) {
 }
 
 func (c *Cluster) exportService(service *v1.Service, monDaemon string) (string, error) {
+	// defer removing the mon canary deployment to after the service is exported because DNS
+	// query on <service>.<ns>.svc.clusterset.local requires the mon canary pod to be running
+	defer c.removeCanaryDeployments(monCanaryLabelSelector + fmt.Sprintf(",mon=%s", monDaemon))
+
 	logger.Infof("exporting service %q", service.Name)
 	exportedIP, err := k8sutil.ExportService(c.ClusterInfo.Context, c.context, service, c.spec.Network.MultiClusterService.ClusterID)
 	if err != nil {
 		return "", errors.Wrapf(err, "failed to export service %q", service.Name)
 	}
 	logger.Infof("mon %q exported IP is %s", service.Name, exportedIP)
-
-	// remove mon canary deployment only after the service is exported because DNS
-	// query on <service>.<ns>.svc.clusterset.local requires the mon pod be running
-	c.removeCanaryDeployments(monCanaryLabelSelector + fmt.Sprintf(",mon=%s", monDaemon))
 
 	return exportedIP, nil
 }

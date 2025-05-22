@@ -62,19 +62,23 @@ func TestMountsMatchVolumes(t *testing.T) {
 
 	volsMountsTestDef := test.VolumesAndMountsTestDefinition{
 		VolumesSpec: &test.VolumesSpec{
-			Moniker: "PodVolumes(\"/dev/sdc\")", Volumes: PodVolumes(dataPathMap, "/dev/sdc", clusterSpec.DataDirHostPath, false)},
+			Moniker: "PodVolumes(\"/dev/sdc\")", Volumes: PodVolumes(dataPathMap, "/dev/sdc", clusterSpec.DataDirHostPath, false),
+		},
 		MountsSpecItems: []*test.MountsSpec{
 			{Moniker: "CephVolumeMounts(true)", Mounts: CephVolumeMounts(dataPathMap, false)},
-			{Moniker: "RookVolumeMounts(true)", Mounts: RookVolumeMounts(dataPathMap, false)}},
+			{Moniker: "RookVolumeMounts(true)", Mounts: RookVolumeMounts(dataPathMap, false)},
+		},
 	}
 	volsMountsTestDef.TestMountsMatchVolumes(t)
 
 	volsMountsTestDef = test.VolumesAndMountsTestDefinition{
 		VolumesSpec: &test.VolumesSpec{
-			Moniker: "PodVolumes(\"/dev/sdc\")", Volumes: PodVolumes(dataPathMap, "/dev/sdc", clusterSpec.DataDirHostPath, true)},
+			Moniker: "PodVolumes(\"/dev/sdc\")", Volumes: PodVolumes(dataPathMap, "/dev/sdc", clusterSpec.DataDirHostPath, true),
+		},
 		MountsSpecItems: []*test.MountsSpec{
 			{Moniker: "CephVolumeMounts(false)", Mounts: CephVolumeMounts(dataPathMap, true)},
-			{Moniker: "RookVolumeMounts(false)", Mounts: RookVolumeMounts(dataPathMap, true)}},
+			{Moniker: "RookVolumeMounts(false)", Mounts: RookVolumeMounts(dataPathMap, true)},
+		},
 	}
 	volsMountsTestDef.TestMountsMatchVolumes(t)
 }
@@ -85,7 +89,8 @@ func TestCheckPodMemory(t *testing.T) {
 	name := "test"
 
 	// A value for the memory used in the tests
-	var memory_value = int64(PodMinimumMemory * 8 * uint64(math.Pow10(6)))
+	// nolint:gosec // G115 no overflow expected in the test
+	memory_value := int64(PodMinimumMemory * 8 * uint64(math.Pow10(6)))
 
 	// Case 1: No memory limits, no memory requested
 	test_resource := v1.ResourceRequirements{}
@@ -155,7 +160,8 @@ func TestBuildSocketPath(t *testing.T) {
 func TestGenerateLivenessProbeExecDaemon(t *testing.T) {
 	daemonID := "0"
 	probe := GenerateLivenessProbeExecDaemon(config.OsdType, daemonID)
-	expectedCommand := []string{"env",
+	expectedCommand := []string{
+		"env",
 		"-i",
 		"sh",
 		"-c",
@@ -191,10 +197,12 @@ func TestDaemonFlags(t *testing.T) {
 				},
 			},
 			daemonID: "daemon-id",
-			expected: []string{"--fsid=id", "--keyring=/etc/ceph/keyring-store/keyring", "--default-log-to-stderr=true", "--default-err-to-stderr=true",
+			expected: []string{
+				"--fsid=id", "--keyring=/etc/ceph/keyring-store/keyring", "--default-log-to-stderr=true", "--default-err-to-stderr=true",
 				"--default-mon-cluster-log-to-stderr=true", "--default-log-stderr-prefix=debug ", "--default-log-to-file=false", "--default-mon-cluster-log-to-file=false",
 				"--mon-host=$(ROOK_CEPH_MON_HOST)", "--mon-initial-members=$(ROOK_CEPH_MON_INITIAL_MEMBERS)", "--id=daemon-id", "--setuser=ceph", "--setgroup=ceph",
-				"--ms-bind-ipv4=false", "--ms-bind-ipv6=true"},
+				"--ms-bind-ipv4=false", "--ms-bind-ipv6=true",
+			},
 		},
 		{
 			label: "case 2: IPv6 disabled",
@@ -203,9 +211,11 @@ func TestDaemonFlags(t *testing.T) {
 			},
 			clusterSpec: &cephv1.ClusterSpec{},
 			daemonID:    "daemon-id",
-			expected: []string{"--fsid=id", "--keyring=/etc/ceph/keyring-store/keyring", "--default-log-to-stderr=true", "--default-err-to-stderr=true",
+			expected: []string{
+				"--fsid=id", "--keyring=/etc/ceph/keyring-store/keyring", "--default-log-to-stderr=true", "--default-err-to-stderr=true",
 				"--default-mon-cluster-log-to-stderr=true", "--default-log-stderr-prefix=debug ", "--default-log-to-file=false", "--default-mon-cluster-log-to-file=false",
-				"--mon-host=$(ROOK_CEPH_MON_HOST)", "--mon-initial-members=$(ROOK_CEPH_MON_INITIAL_MEMBERS)", "--id=daemon-id", "--setuser=ceph", "--setgroup=ceph"},
+				"--mon-host=$(ROOK_CEPH_MON_HOST)", "--mon-initial-members=$(ROOK_CEPH_MON_INITIAL_MEMBERS)", "--id=daemon-id", "--setuser=ceph", "--setgroup=ceph",
+			},
 		},
 	}
 
@@ -382,64 +392,74 @@ func TestLogCollectorContainer(t *testing.T) {
 
 	t.Run("Periodicity 1d and no MaxlogSize", func(t *testing.T) {
 		c := cephv1.ClusterSpec{LogCollector: cephv1.LogCollectorSpec{Enabled: true, Periodicity: "1d"}}
-		got := LogCollectorContainer(daemonId, ns, c)
-		want := fmt.Sprintf(cronLogRotate, daemonId, "daily", "0", "7")
+		got := LogCollectorContainer(daemonId, ns, c, nil)
+		want := fmt.Sprintf(cronLogRotate, daemonId, "daily", "0", "7", "")
 		assert.Equal(t, want, got.Command[5])
 	})
 
 	t.Run("Periodicity 1h and MaxlogSize 1M", func(t *testing.T) {
 		maxsize, _ := resource.ParseQuantity("1M")
 		c := cephv1.ClusterSpec{LogCollector: cephv1.LogCollectorSpec{Enabled: true, Periodicity: "1h", MaxLogSize: &maxsize}}
-		got := LogCollectorContainer("ceph-client.rbd-mirror.a", ns, c)
-		want := fmt.Sprintf(cronLogRotate, "ceph-client.rbd-mirror.a", "hourly", "1M", "28")
+		got := LogCollectorContainer("ceph-client.rbd-mirror.a", ns, c, nil)
+		want := fmt.Sprintf(cronLogRotate, "ceph-client.rbd-mirror.a", "hourly", "1M", "28", "")
 		assert.Equal(t, want, got.Command[5])
 	})
 
 	t.Run("Periodicity weekly and 1G MaxlogSize", func(t *testing.T) {
 		maxsize, _ := resource.ParseQuantity("1Gi")
 		c := cephv1.ClusterSpec{LogCollector: cephv1.LogCollectorSpec{Enabled: true, Periodicity: "weekly", MaxLogSize: &maxsize}}
-		got := LogCollectorContainer(daemonId, ns, c)
-		want := fmt.Sprintf(cronLogRotate, daemonId, "weekly", "1073M", "7")
+		got := LogCollectorContainer(daemonId, ns, c, nil)
+		want := fmt.Sprintf(cronLogRotate, daemonId, "weekly", "1073M", "7", "")
 		assert.Equal(t, want, got.Command[5])
 	})
 
 	t.Run("MaxlogSize 1M and no Periodicity", func(t *testing.T) {
 		maxsize, _ := resource.ParseQuantity("1Mi")
 		c := cephv1.ClusterSpec{LogCollector: cephv1.LogCollectorSpec{Enabled: true, MaxLogSize: &maxsize}}
-		got := LogCollectorContainer(daemonId, ns, c)
-		want := fmt.Sprintf(cronLogRotate, daemonId, "daily", "1M", "7")
+		got := LogCollectorContainer(daemonId, ns, c, nil)
+		want := fmt.Sprintf(cronLogRotate, daemonId, "daily", "1M", "7", "")
 		assert.Equal(t, want, got.Command[5])
 	})
 
 	t.Run("10G MaxlogSize and Periodicity 1d", func(t *testing.T) {
 		maxsize, _ := resource.ParseQuantity("10G")
 		c := cephv1.ClusterSpec{LogCollector: cephv1.LogCollectorSpec{Enabled: true, Periodicity: "1d", MaxLogSize: &maxsize}}
-		got := LogCollectorContainer(daemonId, ns, c)
-		want := fmt.Sprintf(cronLogRotate, daemonId, "daily", "10G", "7")
+		got := LogCollectorContainer(daemonId, ns, c, nil)
+		want := fmt.Sprintf(cronLogRotate, daemonId, "daily", "10G", "7", "")
 		assert.Equal(t, want, got.Command[5])
 	})
 
 	t.Run("10M MaxlogSize and Periodicity weekly", func(t *testing.T) {
 		maxsize, _ := resource.ParseQuantity("10Mi")
 		c := cephv1.ClusterSpec{LogCollector: cephv1.LogCollectorSpec{Enabled: true, Periodicity: "weekly", MaxLogSize: &maxsize}}
-		got := LogCollectorContainer(daemonId, ns, c)
-		want := fmt.Sprintf(cronLogRotate, daemonId, "weekly", "10M", "7")
+		got := LogCollectorContainer(daemonId, ns, c, nil)
+		want := fmt.Sprintf(cronLogRotate, daemonId, "weekly", "10M", "7", "")
 		assert.Equal(t, want, got.Command[5])
 	})
 
 	t.Run("1M MaxlogSize and Periodicity 1d", func(t *testing.T) {
 		maxsize, _ := resource.ParseQuantity("1M")
 		c := cephv1.ClusterSpec{LogCollector: cephv1.LogCollectorSpec{Enabled: true, Periodicity: "1d", MaxLogSize: &maxsize}}
-		got := LogCollectorContainer(daemonId, ns, c)
-		want := fmt.Sprintf(cronLogRotate, daemonId, "daily", "1M", "7")
+		got := LogCollectorContainer(daemonId, ns, c, nil)
+		want := fmt.Sprintf(cronLogRotate, daemonId, "daily", "1M", "7", "")
 		assert.Equal(t, want, got.Command[5])
 	})
 
 	t.Run("500k MaxlogSize and Periodicity 1d", func(t *testing.T) {
 		maxsize, _ := resource.ParseQuantity("500K")
 		c := cephv1.ClusterSpec{LogCollector: cephv1.LogCollectorSpec{Enabled: true, Periodicity: "1d", MaxLogSize: &maxsize}}
-		got := LogCollectorContainer(daemonId, ns, c)
-		want := fmt.Sprintf(cronLogRotate, daemonId, "daily", "1M", "7")
+		got := LogCollectorContainer(daemonId, ns, c, nil)
+		want := fmt.Sprintf(cronLogRotate, daemonId, "daily", "1M", "7", "")
+		assert.Equal(t, want, got.Command[5])
+	})
+
+	t.Run("AdditionalLogFile, 500k MaxlogSize and Periodicity 1d", func(t *testing.T) {
+		additionalLogFile := "/tmp/ceph_test_log_500KB.log"
+		maxsize, _ := resource.ParseQuantity("500K")
+		c := cephv1.ClusterSpec{LogCollector: cephv1.LogCollectorSpec{Enabled: true, Periodicity: "1d", MaxLogSize: &maxsize}}
+		got := LogCollectorContainer(daemonId, ns, c, nil, additionalLogFile)
+
+		want := fmt.Sprintf(cronLogRotate, daemonId, "daily", "1M", "7", additionalLogFile)
 		assert.Equal(t, want, got.Command[5])
 	})
 }

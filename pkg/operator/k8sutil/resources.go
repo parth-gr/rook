@@ -57,7 +57,6 @@ func (info *OwnerInfo) validateOwner(object metav1.Object) error {
 	if objectNamespace == "" {
 		return fmt.Errorf("cluster-scoped resource %q must not have a namespaced resource %q in namespace %q",
 			object.GetName(), info.ownerRef.Name, info.ownerRefNamespace)
-
 	}
 	if info.ownerRefNamespace != objectNamespace {
 		return fmt.Errorf("cross-namespaced owner references are disallowed. resource %q is in namespace %q, owner %q is in %q",
@@ -144,7 +143,13 @@ func (info *OwnerInfo) SetControllerReference(object metav1.Object) error {
 
 // GetUID gets the UID of the owner
 func (info *OwnerInfo) GetUID() types.UID {
-	return info.owner.GetUID()
+	if info.owner != nil {
+		return info.owner.GetUID()
+	}
+	if info.ownerRef != nil {
+		return info.ownerRef.UID
+	}
+	return types.UID("")
 }
 
 func MergeResourceRequirements(first, second v1.ResourceRequirements) v1.ResourceRequirements {

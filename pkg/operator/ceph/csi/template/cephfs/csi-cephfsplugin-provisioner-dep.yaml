@@ -17,6 +17,7 @@ spec:
         {{ $key }}: "{{ $value }}"
         {{ end }}
     spec:
+      securityContext: {}
       serviceAccountName: rook-csi-cephfs-provisioner-sa
       {{ if .ProvisionerPriorityClassName }}
       priorityClassName: {{ .ProvisionerPriorityClassName }}
@@ -34,6 +35,12 @@ spec:
             - "--leader-election-lease-duration={{ .LeaderElectionLeaseDuration }}"
             - "--leader-election-renew-deadline={{ .LeaderElectionRenewDeadline }}"
             - "--leader-election-retry-period={{ .LeaderElectionRetryPeriod }}"
+            {{ if .KubeApiBurst }}
+            - "--kube-api-burst={{ .KubeApiBurst }}"
+            {{ end }}
+            {{ if .KubeApiQPS }}
+            - "--kube-api-qps={{ .KubeApiQPS }}"
+            {{ end }}
           env:
             - name: ADDRESS
               value: /csi/csi-provisioner.sock
@@ -56,7 +63,13 @@ spec:
             - "--leader-election-retry-period={{ .LeaderElectionRetryPeriod }}"
             - "--extra-create-metadata=true"
           {{ if .VolumeGroupSnapshotSupported }}
-            - "--enable-volume-group-snapshots={{ .EnableVolumeGroupSnapshot }}"
+            - "{{ .VolumeGroupSnapshotCLIFlag }}"
+          {{ end }}
+          {{ if .KubeApiBurst }}
+            - "--kube-api-burst={{ .KubeApiBurst }}"
+          {{ end }}
+          {{ if .KubeApiQPS }}
+            - "--kube-api-qps={{ .KubeApiQPS }}"
           {{ end }}
           env:
             - name: ADDRESS
@@ -79,6 +92,12 @@ spec:
             - "--leader-election-retry-period={{ .LeaderElectionRetryPeriod }}"
             - "--handle-volume-inuse-error=false"
             - "--feature-gates=RecoverVolumeExpansionFailure=true"
+            {{ if .KubeApiBurst }}
+            - "--kube-api-burst={{ .KubeApiBurst }}"
+            {{ end }}
+            {{ if .KubeApiQPS }}
+            - "--kube-api-qps={{ .KubeApiQPS }}"
+            {{ end }}
           env:
             - name: ADDRESS
               value: unix:///csi/csi-provisioner.sock
@@ -101,6 +120,12 @@ spec:
             - "--leader-election-renew-deadline={{ .LeaderElectionRenewDeadline }}"
             - "--leader-election-retry-period={{ .LeaderElectionRetryPeriod }}"
             - "--extra-create-metadata=true"
+            {{ if .KubeApiBurst }}
+            - "--kube-api-burst={{ .KubeApiBurst }}"
+            {{ end }}
+            {{ if .KubeApiQPS }}
+            - "--kube-api-qps={{ .KubeApiQPS }}"
+            {{ end }}
           env:
             - name: ADDRESS
               value: unix:///csi/csi-provisioner.sock
@@ -119,6 +144,11 @@ spec:
             - "--drivername={{ .DriverNamePrefix }}cephfs.csi.ceph.com"
             - "--pidlimit=-1"
             - "--forcecephkernelclient={{ .ForceCephFSKernelClient }}"
+            {{ if .CSILogRotation }}
+            - "--logtostderr=false"
+            - "--alsologtostderr=true"
+            - "--log_file={{ .CsiLogRootPath }}/log/{{ .CsiComponentName }}/csi-cephfsplugin.log"
+            {{ end }}
             {{ if .CSIEnableMetadata }}
             - "--setmetadata={{ .CSIEnableMetadata }}"
             {{ end }}
@@ -148,6 +178,10 @@ spec:
               value: unix:///csi/csi-addons.sock
             {{ end }}
           imagePullPolicy: {{ .ImagePullPolicy }}
+          {{ if and .Privileged .CSILogRotation }}
+          securityContext:
+            privileged: true
+          {{ end }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
@@ -162,10 +196,18 @@ spec:
               mountPath: /etc/ceph-csi-config/
             - name: keys-tmp-dir
               mountPath: /tmp/csi/keys
+            {{ if .CSILogRotation }}
+            - mountPath: {{ .CsiLogRootPath }}/log/{{ .CsiComponentName }}
+              name: csi-log
+            {{ end }}
             {{ if .MountCustomCephConf }}
             - name: ceph-config
               mountPath: /etc/ceph/ceph.conf
               subPath: ceph.conf
+            {{ end }}
+            {{ if .EnableCSIEncryption }}
+            - name: rook-ceph-csi-kms-config
+              mountPath: /etc/ceph-csi-encryption-kms-config/
             {{ end }}
         {{ if .EnableCSIAddonsSideCar }}
         - name: csi-addons
@@ -174,7 +216,7 @@ spec:
             - "--node-id=$(NODE_ID)"
             - "--v={{ .LogLevel }}"
             - "--csi-addons-address=$(CSIADDONS_ENDPOINT)"
-            - "--controller-port={{ .CSIAddonsPort }}"
+            - "--controller-port={{ .CSIAddonsCephFSProvisionerPort }}"
             - "--pod=$(POD_NAME)"
             - "--namespace=$(POD_NAMESPACE)"
             - "--pod-uid=$(POD_UID)"
@@ -183,8 +225,13 @@ spec:
             - "--leader-election-lease-duration={{ .LeaderElectionLeaseDuration }}"
             - "--leader-election-renew-deadline={{ .LeaderElectionRenewDeadline }}"
             - "--leader-election-retry-period={{ .LeaderElectionRetryPeriod }}"
+            {{ if .CSILogRotation }}
+            - "--logtostderr=false"
+            - "--alsologtostderr=true"
+            - "--log_file={{ .CsiLogRootPath }}/log/{{ .CsiComponentName }}/csi-addons.log"
+            {{ end }}
           ports:
-            - containerPort: {{ .CSIAddonsPort }}
+            - containerPort: {{ .CSIAddonsCephFSProvisionerPort }}
           env:
             - name: NODE_ID
               valueFrom:
@@ -205,9 +252,20 @@ spec:
             - name: CSIADDONS_ENDPOINT
               value: unix:///csi/csi-addons.sock
           imagePullPolicy: {{ .ImagePullPolicy }}
+          {{ if and .Privileged .CSILogRotation }}
+          securityContext:
+            privileged: true
+            capabilities:
+              add: []
+              drop: ["ALL"]
+          {{ end }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
+            {{ if .CSILogRotation }}
+            - mountPath: {{ .CsiLogRootPath }}/log/{{ .CsiComponentName }}
+              name: csi-log
+            {{ end }}
         {{ end }}
         {{ if .EnableLiveness }}
         - name: liveness-prometheus
@@ -255,6 +313,15 @@ spec:
           emptyDir: {
             medium: "Memory"
           }
+        {{ if .CSILogRotation }}
+        - name: csi-log
+          hostPath:
+            path: {{ .CsiLogRootPath }}/log/{{ .CsiComponentName }}
+            type: DirectoryOrCreate
+        - name: csi-logs-logrotate
+          emptyDir:
+            type: DirectoryOrCreate
+        {{ end }}
         {{ if .MountCustomCephConf }}
         - name: ceph-config
           configMap:
@@ -262,4 +329,12 @@ spec:
             items:
             - key: ceph.conf
               path: ceph.conf
+        {{ end }}
+        {{ if .EnableCSIEncryption }}
+        - name: rook-ceph-csi-kms-config
+          configMap:
+            name: rook-ceph-csi-kms-config
+            items:
+            - key: config.json
+              path: config.json
         {{ end }}

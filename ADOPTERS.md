@@ -13,9 +13,8 @@ To add your organization to this list, choose one of the following options:
 
 - [Open a PR](https://rook.io/docs/rook/latest/Contributing/development-flow/#submitting-a-pull-request) to directly update this list
 - [Open a new issue](https://github.com/rook/rook/issues/new/choose) with the information
-- Send an email to [Steering committee members](https://github.com/rook/rook/blob/master/OWNERS.md#steering-committee) with the information
 
-For the latter two options, a maintainer will submit a PR to update the table.
+For the latter option, a maintainer will submit a PR to update the table on your behalf.
 Please reach out to us on [Slack](https://slack.rook.io) with any questions.
 
 If submitting a description, the addition will be at the end of first part of the list. If a description is not provided, the addition will be at the end of the full list.
@@ -67,6 +66,11 @@ If submitting a description, the addition will be at the end of first part of th
 * [Radio Sound](https://radiosound.com/) uses Rook to power their website and GitLab for their CI/CD
   pipeline, because of the truly cloud-native experience, like *"a little drop of the Google magic
   in our own server rack"*.
+* [Alauda](https://www.alauda.io/) Our container platform product(ACP) uses Rook Ceph to provide data
+  persistence for applications, in addition to middleware backups, virtual machine disks, and more.
+* [Thalassa Cloud](https://thalassa.cloud) is a private cloud platform that brings the functionality
+  of public cloud services into on-premises data centers. With Rook Ceph, we provide highly reliable
+  and scalable storage solutions tailored for our IaaS layer.
 * [CyCore Systems](https://www.cycoresys.com/)
 * [Datacom](http://datacom.co.nz/Home.aspx)
 * [Turtle Network (BLACK TURTLE BVBA)](https://www.turtlenetwork.eu/#home)

@@ -28,6 +28,7 @@ import (
 	"github.com/rook/rook/pkg/operator/ceph/cluster/mon"
 	"github.com/rook/rook/pkg/operator/ceph/cluster/osd/config"
 	"github.com/rook/rook/pkg/operator/ceph/controller"
+	opcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	batch "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
@@ -51,7 +52,7 @@ func (c *Cluster) makeJob(osdProps osdProperties, provisionConfig *provisionConf
 			podSpec.Spec.InitContainers = append(podSpec.Spec.InitContainers, c.getPVCWalInitContainer("/wal", osdProps))
 		}
 	} else {
-		podSpec.Spec.NodeSelector = map[string]string{v1.LabelHostname: osdProps.crushHostname}
+		podSpec.Spec.NodeSelector = map[string]string{k8sutil.LabelHostname(): osdProps.crushHostname}
 	}
 
 	job := &batch.Job{
@@ -103,6 +104,7 @@ func (c *Cluster) provisionPodTemplateSpec(osdProps osdProperties, restart v1.Re
 	// ceph-volume is currently set up to use /etc/ceph/ceph.conf; this means no user config
 	// overrides will apply to ceph-volume, but this is unnecessary anyway
 	volumes := append(controller.PodVolumes(provisionConfig.DataPathMap, c.spec.DataDirHostPath, c.spec.DataDirHostPath, true), copyBinariesVolume)
+	volumes = c.updateCephConfigVolume(volumes, osdProps.crushHostname)
 
 	// create a volume on /dev so the pod can access devices on the host
 	devVolume := v1.Volume{Name: "devices", VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: "/dev"}}}
@@ -154,9 +156,10 @@ func (c *Cluster) provisionPodTemplateSpec(osdProps osdProperties, restart v1.Re
 		},
 		RestartPolicy:     restart,
 		Volumes:           volumes,
-		HostNetwork:       c.spec.Network.IsHost(),
+		HostNetwork:       opcontroller.EnforceHostNetwork(),
 		PriorityClassName: cephv1.GetOSDPriorityClassName(c.spec.PriorityClassNames),
 		SchedulerName:     osdProps.schedulerName,
+		SecurityContext:   &v1.PodSecurityContext{},
 	}
 	if c.spec.Network.IsHost() {
 		podSpec.DNSPolicy = v1.DNSClusterFirstWithHostNet
@@ -306,16 +309,16 @@ func (c *Cluster) provisionOSDContainer(osdProps osdProperties, copyBinariesMoun
 
 	// Add OSD ID as environment variables.
 	// When this env is set, prepare pod job will destroy this OSD.
-	if c.replaceOSD != nil {
+	if c.migrateOSD != nil {
 		// Compare pvc claim name in case of OSDs on PVC
 		if osdProps.onPVC() {
-			if strings.Contains(c.replaceOSD.Path, osdProps.pvc.ClaimName) {
-				envVars = append(envVars, replaceOSDIDEnvVar(fmt.Sprint(c.replaceOSD.ID)))
+			if strings.Contains(c.migrateOSD.PVCName, osdProps.pvc.ClaimName) {
+				envVars = append(envVars, replaceOSDIDEnvVar(fmt.Sprint(c.migrateOSD.ID)))
 			}
 		} else {
 			// Compare the node name in case of OSDs on disk
-			if c.replaceOSD.Node == osdProps.crushHostname {
-				envVars = append(envVars, replaceOSDIDEnvVar(fmt.Sprint(c.replaceOSD.ID)))
+			if c.migrateOSD.NodeName == osdProps.crushHostname {
+				envVars = append(envVars, replaceOSDIDEnvVar(fmt.Sprint(c.migrateOSD.ID)))
 			}
 		}
 	}
@@ -340,6 +343,12 @@ func (c *Cluster) provisionOSDContainer(osdProps osdProperties, copyBinariesMoun
 			RunAsUser:              &runAsUser,
 			RunAsNonRoot:           &runAsNonRoot,
 			ReadOnlyRootFilesystem: &readOnlyRootFilesystem,
+			Capabilities: &v1.Capabilities{
+				Add: []v1.Capability{},
+				Drop: []v1.Capability{
+					"NET_RAW",
+				},
+			},
 		},
 		Resources: cephv1.GetPrepareOSDResources(c.spec.Resources),
 	}

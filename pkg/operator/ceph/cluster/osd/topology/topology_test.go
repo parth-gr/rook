@@ -44,12 +44,14 @@ func TestCleanTopologyLabels(t *testing.T) {
 	nodeLabels := map[string]string{
 		corev1.LabelZoneRegionStable:  "r.region",
 		"kubernetes.io/hostname":      "host.name",
+		"my_custom_hostname_label":    "host.custom.name",
 		"topology.rook.io/rack":       "r.rack",
 		"topology.rook.io/row":        "r.row",
 		"topology.rook.io/datacenter": "d.datacenter",
 		"topology.rook.io/room":       "test",
 		"topology.rook.io/chassis":    "test",
-		"topology.rook.io/pod":        "test"}
+		"topology.rook.io/pod":        "test",
+	}
 	topology, affinity := ExtractOSDTopologyFromLabels(nodeLabels)
 	assert.Equal(t, 6, len(topology))
 	assert.Equal(t, "r-region", topology["region"])
@@ -62,6 +64,18 @@ func TestCleanTopologyLabels(t *testing.T) {
 	assert.Equal(t, "", topology["pod"])
 	assert.Equal(t, "", topology["room"])
 
+	t.Setenv("ROOK_CUSTOM_HOSTNAME_LABEL", "my_custom_hostname_label")
+	topology, affinity = ExtractOSDTopologyFromLabels(nodeLabels)
+	assert.Equal(t, 6, len(topology))
+	assert.Equal(t, "r-region", topology["region"])
+	assert.Equal(t, "host-custom-name", topology["host"])
+	assert.Equal(t, "r-rack", topology["rack"])
+	assert.Equal(t, "r-row", topology["row"])
+	assert.Equal(t, "d-datacenter", topology["datacenter"])
+	assert.Equal(t, "topology.rook.io/chassis=test", affinity)
+	assert.Equal(t, "test", topology["chassis"])
+	assert.Equal(t, "", topology["pod"])
+	assert.Equal(t, "", topology["room"])
 }
 
 func TestTopologyLabels(t *testing.T) {
@@ -116,6 +130,19 @@ func TestTopologyLabels(t *testing.T) {
 
 func TestGetDefaultTopologyLabels(t *testing.T) {
 	expectedLabels := "kubernetes.io/hostname," +
+		"topology.kubernetes.io/region," +
+		"topology.kubernetes.io/zone," +
+		"topology.rook.io/chassis," +
+		"topology.rook.io/rack," +
+		"topology.rook.io/row," +
+		"topology.rook.io/pdu," +
+		"topology.rook.io/pod," +
+		"topology.rook.io/room," +
+		"topology.rook.io/datacenter"
+	assert.Equal(t, expectedLabels, GetDefaultTopologyLabels())
+
+	t.Setenv("ROOK_CUSTOM_HOSTNAME_LABEL", "my_custom_hostname_label")
+	expectedLabels = "my_custom_hostname_label," +
 		"topology.kubernetes.io/region," +
 		"topology.kubernetes.io/zone," +
 		"topology.rook.io/chassis," +

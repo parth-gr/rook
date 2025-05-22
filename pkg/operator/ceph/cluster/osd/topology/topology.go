@@ -23,7 +23,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/coreos/pkg/capnslog"
 	"github.com/rook/rook/pkg/daemon/ceph/client"
+	"github.com/rook/rook/pkg/operator/k8sutil"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -39,14 +41,15 @@ var (
 
 	// The list of supported failure domains in the CRUSH map, ordered from lowest to highest
 	CRUSHMapLevelsOrdered = append([]string{"host"}, append(CRUSHTopologyLabels, KubernetesTopologyLabels...)...)
+
+	logger = capnslog.NewPackageLogger("github.com/rook/rook", "osd-topology")
 )
 
 const (
 	topologyLabelPrefix = "topology.rook.io/"
-	labelHostname       = "kubernetes.io/hostname"
 )
 
-// ExtractTopologyFromLabels extracts rook topology from labels and returns a map from topology type to value
+// ExtractOSDTopologyFromLabels extracts rook topology from labels and returns a map from topology type to value
 func ExtractOSDTopologyFromLabels(labels map[string]string) (map[string]string, string) {
 	topology, topologyAffinity := extractTopologyFromLabels(labels)
 
@@ -68,19 +71,20 @@ func rookTopologyLabelsOrdered() []string {
 
 func allKubernetesTopologyLabelsOrdered() []string {
 	return append(
-		append([]string{corev1.LabelTopologyRegion,
-			corev1.LabelTopologyZone},
+		append([]string{
+			corev1.LabelTopologyRegion,
+			corev1.LabelTopologyZone,
+		},
 			rookTopologyLabelsOrdered()...),
-		labelHostname, //  host is the lowest level in the crush map hierarchy
+		k8sutil.LabelHostname(), //  host is the lowest level in the crush map hierarchy
 	)
 }
 
 func kubernetesTopologyLabelToCRUSHLabel(label string) string {
-	crushLabel := strings.Split(label, "/")
-	if crushLabel[len(crushLabel)-1] == "hostname" {
-		// kubernetes uses "kubernetes.io/hostname" whereas CRUSH uses "host"
+	if label == k8sutil.LabelHostname() {
 		return "host"
 	}
+	crushLabel := strings.Split(label, "/")
 	return crushLabel[len(crushLabel)-1]
 }
 
@@ -107,16 +111,25 @@ func extractTopologyFromLabels(labels map[string]string) (map[string]string, str
 	}
 	// iterate in lowest to highest order as the lowest level should be sustained and higher level duplicate
 	// should be removed
-	duplicateTopology := make(map[string]int)
+	duplicateTopology := make(map[string][]string)
 	for i := len(allKubernetesTopologyLabels) - 1; i >= 0; i-- {
 		topologyLabel := allKubernetesTopologyLabels[i]
 		if value, ok := labels[topologyLabel]; ok {
 			if _, ok := duplicateTopology[value]; ok {
 				delete(topology, kubernetesTopologyLabelToCRUSHLabel(topologyLabel))
-			} else {
-				duplicateTopology[value] = 1
 			}
+			duplicateTopology[value] = append(duplicateTopology[value], topologyLabel)
 		}
+	}
+
+	// remove non-duplicate entries, and report if any duplicate entries were found
+	for value, duplicateKeys := range duplicateTopology {
+		if len(duplicateKeys) <= 1 {
+			delete(duplicateTopology, value)
+		}
+	}
+	if len(duplicateTopology) != 0 {
+		logger.Warningf("Found duplicate location values with labels: %v", duplicateTopology)
 	}
 
 	return topology, topologyAffinity
@@ -128,7 +141,7 @@ func formatTopologyAffinity(label, value string) string {
 
 // GetDefaultTopologyLabels returns the supported default topology labels.
 func GetDefaultTopologyLabels() string {
-	Labels := []string{corev1.LabelHostname, corev1.LabelZoneRegionStable, corev1.LabelZoneFailureDomainStable}
+	Labels := []string{k8sutil.LabelHostname(), corev1.LabelZoneRegionStable, corev1.LabelZoneFailureDomainStable}
 	for _, label := range CRUSHTopologyLabels {
 		Labels = append(Labels, topologyLabelPrefix+label)
 	}

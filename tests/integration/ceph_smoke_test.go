@@ -129,7 +129,7 @@ func (s *SmokeSuite) TestObjectStorage_SmokeTest() {
 	storeName := "lite-store"
 	deleteStore := true
 	tls := false
-	runObjectE2ETestLite(s.T(), s.helper, s.k8sh, s.installer, s.settings.Namespace, storeName, 2, deleteStore, tls)
+	runObjectE2ETestLite(s.T(), s.helper, s.k8sh, s.installer, s.settings.Namespace, storeName, 2, deleteStore, tls, false)
 }
 
 // Test to make sure all rook components are installed and Running
@@ -234,6 +234,7 @@ func (s *SmokeSuite) TestPoolResize() {
 		require.NoError(s.T(), err)
 		if details.Size > 1 {
 			logger.Infof("pool %s size was updated", poolName)
+			// nolint:gosec // G115 no overflow expected in the test
 			require.Equal(s.T(), 2, int(details.Size))
 			poolResized = true
 

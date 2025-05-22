@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"testing"
 	"time"
 
@@ -73,7 +74,7 @@ func createNewCluster(t *testing.T) *Cluster {
 		Client:    cl,
 	}
 	ownerInfo := cephclient.NewMinimumOwnerInfo(t)
-	clusterInfo := &cephclient.ClusterInfo{Namespace: "ns", FSID: "myfsid", OwnerInfo: ownerInfo, CephVersion: cephver.CephVersion{Major: 16, Minor: 2, Build: 5}, Context: context.TODO()}
+	clusterInfo := &cephclient.ClusterInfo{Namespace: "ns", FSID: "myfsid", OwnerInfo: ownerInfo, CephVersion: cephver.CephVersion{Major: 17, Minor: 2, Build: 0}, Context: context.TODO()}
 	clusterInfo.SetName("test")
 	clusterSpec := cephv1.ClusterSpec{
 		Annotations:        map[cephv1.KeyType]cephv1.Annotations{cephv1.KeyMgr: {"my": "annotation"}},
@@ -172,6 +173,7 @@ func validateServices(t *testing.T, c *Cluster) {
 			assert.Equal(t, ds.Spec.Ports[0].Port, int32(dashboardPortHTTPS))
 		} else {
 			// non-zero ports are configured as-is
+			// nolint:gosec // G115 no overflow expected in the test
 			assert.Equal(t, ds.Spec.Ports[0].Port, int32(c.spec.Dashboard.Port))
 		}
 	} else {
@@ -189,35 +191,76 @@ func TestActiveMgrLabels(t *testing.T) {
 	validateStart(t, c)
 
 	mgrNames := []string{"a", "b"}
-	for i := 0; i < c.spec.Mgr.Count; i++ {
+	for i := 0; i < len(mgrNames); i++ {
 		// Simulate the Mgr pod having been created
 		daemonName := mgrNames[i]
 		mgrPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 			Name: fmt.Sprintf("rook-ceph-mgr-%s", daemonName),
-			Labels: map[string]string{k8sutil.AppAttr: "rook-ceph-mgr",
+			Labels: map[string]string{
+				k8sutil.AppAttr:  "rook-ceph-mgr",
 				"instance":       daemonName,
 				"ceph_daemon_id": daemonName,
 				"mgr":            daemonName,
-				"rook_cluster":   "ns"}}}
+				"rook_cluster":   "ns",
+			},
+		}}
 		_, err = c.context.Clientset.CoreV1().Pods(c.clusterInfo.Namespace).Create(c.clusterInfo.Context, mgrPod, metav1.CreateOptions{})
 		assert.NoError(t, err)
 	}
+	mgrA, mgrB := mgrNames[0], mgrNames[1]
 
-	for i := 0; i < c.spec.Mgr.Count; i++ {
-		daemonName := mgrNames[i]
-		_, err := c.context.Clientset.AppsV1().Deployments(c.clusterInfo.Namespace).Get(context.TODO(), fmt.Sprintf("rook-ceph-mgr-%s", daemonName), metav1.GetOptions{})
-		assert.NoError(t, err)
-		_, err = c.UpdateActiveMgrLabel(daemonName, "")
-		assert.NoError(t, err)
-		pods, err := c.context.Clientset.CoreV1().Pods(c.clusterInfo.Namespace).List(c.clusterInfo.Context, metav1.ListOptions{LabelSelector: "app=rook-ceph-mgr"})
-		assert.NoError(t, err)
-		assert.Contains(t, pods.Items[i].Labels, "mgr_role")
-		if daemonName == "a" {
-			assert.Equal(t, pods.Items[i].Labels["mgr_role"], "active")
-		} else if daemonName == "b" {
-			assert.Equal(t, pods.Items[i].Labels["mgr_role"], "standby")
-		}
-	}
+	err = c.SetMgrRoleLabel(mgrA, true)
+	assert.NoError(t, err, "set mgr a to active")
+	err = c.SetMgrRoleLabel(mgrB, false)
+	assert.NoError(t, err, "set mgr b to standby")
+
+	pods, err := c.context.Clientset.CoreV1().Pods(c.clusterInfo.Namespace).List(c.clusterInfo.Context, metav1.ListOptions{LabelSelector: "app=rook-ceph-mgr"})
+	assert.NoError(t, err, "lookup all mgr pods")
+	assert.Len(t, pods.Items, 2)
+	sort.Slice(pods.Items, func(i, j int) bool {
+		// sort pods by name, so pod for mgrA will be 0 and for B - 1.
+		return pods.Items[i].GetName() < pods.Items[j].GetName()
+	})
+
+	assert.Equal(t, pods.Items[0].Labels["mgr"], mgrA)
+	assert.Equal(t, pods.Items[0].Labels["mgr_role"], "active", "mgr a is active")
+
+	assert.Equal(t, pods.Items[1].Labels["mgr"], mgrB)
+	assert.Equal(t, pods.Items[1].Labels["mgr_role"], "standby", "mgr b is standby")
+
+	err = c.SetMgrRoleLabel(mgrA, false)
+	assert.NoError(t, err, "set mgr a to standby")
+
+	pods, err = c.context.Clientset.CoreV1().Pods(c.clusterInfo.Namespace).List(c.clusterInfo.Context, metav1.ListOptions{LabelSelector: "app=rook-ceph-mgr"})
+	assert.NoError(t, err, "lookup all mgr pods")
+	assert.Len(t, pods.Items, 2)
+	sort.Slice(pods.Items, func(i, j int) bool {
+		// sort pods by name, so pod for mgrA will be 0 and for B - 1.
+		return pods.Items[i].GetName() < pods.Items[j].GetName()
+	})
+
+	assert.Equal(t, pods.Items[0].Labels["mgr"], mgrA)
+	assert.Equal(t, pods.Items[0].Labels["mgr_role"], "standby", "mgr a is now standby")
+
+	assert.Equal(t, pods.Items[1].Labels["mgr"], mgrB)
+	assert.Equal(t, pods.Items[1].Labels["mgr_role"], "standby", "mgr b is still standby")
+
+	err = c.SetMgrRoleLabel(mgrB, true)
+	assert.NoError(t, err, "set mgr b to active")
+
+	pods, err = c.context.Clientset.CoreV1().Pods(c.clusterInfo.Namespace).List(c.clusterInfo.Context, metav1.ListOptions{LabelSelector: "app=rook-ceph-mgr"})
+	assert.NoError(t, err, "lookup all mgr pods")
+	assert.Len(t, pods.Items, 2)
+	sort.Slice(pods.Items, func(i, j int) bool {
+		// sort pods by name, so pod for mgrA will be 0 and for B - 1.
+		return pods.Items[i].GetName() < pods.Items[j].GetName()
+	})
+
+	assert.Equal(t, pods.Items[0].Labels["mgr"], mgrA)
+	assert.Equal(t, pods.Items[0].Labels["mgr_role"], "standby", "mgr a is still standby")
+
+	assert.Equal(t, pods.Items[1].Labels["mgr"], mgrB)
+	assert.Equal(t, pods.Items[1].Labels["mgr_role"], "active", "mgr b is now active")
 
 	testopk8s.ClearDeploymentsUpdated(deploymentsUpdated)
 }
@@ -250,7 +293,8 @@ func TestUpdateServiceSelectors(t *testing.T) {
 				Selector: map[string]string{
 					"app":                    "rook-ceph-mgr",
 					controller.DaemonIDLabel: "a",
-				}},
+				},
+			},
 		}
 		svc2 := corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{Name: "svc2"},
@@ -258,7 +302,8 @@ func TestUpdateServiceSelectors(t *testing.T) {
 				Selector: map[string]string{
 					"app":                    "rook-ceph-mgr",
 					controller.DaemonIDLabel: "a",
-				}},
+				},
+			},
 		}
 		_, err := c.context.Clientset.CoreV1().Services(c.clusterInfo.Namespace).Create(clusterInfo.Context, &svc1, metav1.CreateOptions{})
 		assert.NoError(t, err)
@@ -303,7 +348,7 @@ func TestConfigureModules(t *testing.T) {
 					lastModuleConfigured = args[3]
 				}
 			}
-			return "", nil //return "{\"key\":\"mysecurekey\"}", nil
+			return "", nil // return "{\"key\":\"mysecurekey\"}", nil
 		},
 		MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
 			if args[0] == "config" && args[1] == "set" && args[2] == "global" {
@@ -364,23 +409,26 @@ func TestApplyMonitoringLabels(t *testing.T) {
 	}
 	c := &Cluster{spec: clusterSpec}
 	sm := &monitoringv1.ServiceMonitor{Spec: monitoringv1.ServiceMonitorSpec{
-		Endpoints: []monitoringv1.Endpoint{{}}}}
+		Endpoints: []monitoringv1.Endpoint{{}},
+	}}
 
 	// Service Monitor RelabelConfigs updated when 'rook.io/managedBy' monitoring label is found
 	monitoringLabels := cephv1.LabelsSpec{
 		cephv1.KeyMonitoring: map[string]string{
-			"rook.io/managedBy": "storagecluster"},
+			"rook.io/managedBy": "storagecluster",
+		},
 	}
 	c.spec.Labels = monitoringLabels
 	applyMonitoringLabels(c, sm)
 	fmt.Printf("Hello1")
 	assert.Equal(t, "managedBy", sm.Spec.Endpoints[0].RelabelConfigs[0].TargetLabel)
-	assert.Equal(t, "storagecluster", sm.Spec.Endpoints[0].RelabelConfigs[0].Replacement)
+	assert.Equal(t, "storagecluster", *sm.Spec.Endpoints[0].RelabelConfigs[0].Replacement)
 
 	// Service Monitor RelabelConfigs not updated when the required monitoring label is not found
 	monitoringLabels = cephv1.LabelsSpec{
 		cephv1.KeyMonitoring: map[string]string{
-			"wrongLabelKey": "storagecluster"},
+			"wrongLabelKey": "storagecluster",
+		},
 	}
 	c.spec.Labels = monitoringLabels
 	sm.Spec.Endpoints[0].RelabelConfigs = nil
@@ -414,7 +462,7 @@ func TestCluster_configurePrometheusModule(t *testing.T) {
 					lastModuleConfigured = args[3]
 				}
 			}
-			return "", nil //return "{\"key\":\"mysecurekey\"}", nil
+			return "", nil // return "{\"key\":\"mysecurekey\"}", nil
 		},
 		MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
 			if args[0] == "config" && args[1] == "set" && args[2] == "mgr" {
@@ -489,5 +537,4 @@ func TestCluster_configurePrometheusModule(t *testing.T) {
 	assert.Equal(t, 1, modulesDisabled)
 	assert.Equal(t, "30002", configSettings["mgr/prometheus/server_port"])
 	assert.Equal(t, "60", configSettings["mgr/prometheus/scrape_interval"])
-
 }

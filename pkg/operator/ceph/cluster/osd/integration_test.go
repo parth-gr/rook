@@ -49,10 +49,8 @@ import (
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-var (
-	// global to allow creating helper functions that are not inline with test functions
-	testIDGenerator osdIDGenerator
-)
+// global to allow creating helper functions that are not inline with test functions
+var testIDGenerator osdIDGenerator
 
 // TODO: look into: failed to calculate diff between current deployment and newly generated one.
 //   Failed to generate strategic merge patch: map: map[] does not contain declared merge key: uid
@@ -585,10 +583,13 @@ func osdIntegrationTestExecutor(t *testing.T, clientset *fake.Clientset, namespa
 						return `["ssd"]`, nil
 					}
 				}
+				if args[1] == "df" {
+					return osdDFResults, nil
+				}
 			}
 			if args[0] == "versions" {
 				// the update deploy code only cares about the mons from the ceph version command results
-				v := `{"mon":{"ceph version 17.2.1 (somehash) quincy (stable)":3}}`
+				v := `{"mon":{"ceph version 19.2.1 (somehash) squid (stable)":3}}`
 				return v, nil
 			}
 			return "", errors.Errorf("unexpected ceph command %q", args)

@@ -21,8 +21,9 @@ First the Prometheus operator needs to be started in the cluster so it can watch
 A full explanation can be found in the [Prometheus operator repository on GitHub](https://github.com/prometheus-operator/prometheus-operator), but the quick instructions can be found here:
 
 ```console
-kubectl create -f https://raw.githubusercontent.com/coreos/prometheus-operator/v0.71.1/bundle.yaml
+kubectl create -f https://raw.githubusercontent.com/coreos/prometheus-operator/v0.82.0/bundle.yaml
 ```
+
 !!! note
     If the Prometheus Operator is already present in your cluster, the command provided above may fail. For a detailed explanation of the issue and a workaround, please refer to [this issue](https://github.com/rook/rook/issues/13459).
 
@@ -68,7 +69,9 @@ kubectl -n rook-ceph get pod prometheus-rook-prometheus-0
 
 ### Dashboard config
 
-Configure the Prometheus endpoint so the dashboard can retrieve metrics from Prometheus with two settings:
+Configure the Prometheus endpoint so the dashboard can retrieve metrics from Prometheus with two
+settings:
+
 - `prometheusEndpoint`: The url of the Prometheus instance
 - `prometheusEndpointSSLVerify`: Whether SSL should be verified if the Prometheus server is using https
 
@@ -80,12 +83,13 @@ echo "http://$(kubectl -n rook-ceph -o jsonpath={.status.hostIP} get pod prometh
 
 Following is an example to configure the Prometheus endpoint in the CephCluster CR.
 
-    ```YAML
-    spec:
-      dashboard:
+```YAML
+spec:
+    dashboard:
+        enabled: true
         prometheusEndpoint: http://192.168.61.204:30900
         prometheusEndpointSSLVerify: true
-    ```
+```
 
 !!! note
     It is not recommended to consume storage from the Ceph cluster for Prometheus.
@@ -130,10 +134,10 @@ A guide to how you can write your own Prometheus consoles can be found on the of
 To enable the Ceph Prometheus alerts via the helm charts, set the following properties in values.yaml:
 
 * rook-ceph chart:
-  `monitoring.enabled: true`
+    - `monitoring.enabled: true`
 * rook-ceph-cluster chart:
-  `monitoring.enabled: true`
-  `monitoring.createPrometheusRules: true`
+    - `monitoring.enabled: true`
+    - `monitoring.createPrometheusRules: true`
 
 Alternatively, to enable the Ceph Prometheus alerts with example manifests follow these steps:
 
@@ -225,9 +229,11 @@ The dashboards have been created by [@galexrt](https://github.com/galexrt). For 
 
 The following Grafana dashboards are available:
 
-- [Ceph - Cluster](https://grafana.com/grafana/dashboards/2842)
-- [Ceph - OSD (Single)](https://grafana.com/grafana/dashboards/5336)
-- [Ceph - Pools](https://grafana.com/grafana/dashboards/5342)
+- [Ceph - Cluster (ID: 2842)](https://grafana.com/grafana/dashboards/2842)
+- [Ceph - OSD (Single) (ID: 5336)](https://grafana.com/grafana/dashboards/5336)
+- [Ceph - Pools (ID: 5342)](https://grafana.com/grafana/dashboards/5342)
+
+The dashboard JSON files are also available on [GitHub here `/deploy/examples/monitoring/grafana/`](https://github.com/rook/rook/tree/master/deploy/examples/monitoring/grafana/).
 
 ## Updates and Upgrades
 
@@ -250,7 +256,7 @@ To clean up all the artifacts created by the monitoring walk-through, copy/paste
 kubectl delete -f service-monitor.yaml
 kubectl delete -f prometheus.yaml
 kubectl delete -f prometheus-service.yaml
-kubectl delete -f https://raw.githubusercontent.com/coreos/prometheus-operator/v0.71.1/bundle.yaml
+kubectl delete -f https://raw.githubusercontent.com/coreos/prometheus-operator/v0.82.0/bundle.yaml
 ```
 
 Then the rest of the instructions in the [Prometheus Operator docs](https://github.com/prometheus-operator/prometheus-operator#removal) can be followed to finish cleaning up.
@@ -272,6 +278,10 @@ kubectl create -f csi-metrics-service-monitor.yaml
 ```
 
 This will create the service monitor to have prometheus monitor CSI
+
+!!! note
+    Please note that the liveness sidecar is disabled by default.
+    To enable it set `CSI_ENABLE_LIVENESS` to `true` in the Rook operator settings (operator.yaml).
 
 ### Collecting RBD per-image IO statistics
 

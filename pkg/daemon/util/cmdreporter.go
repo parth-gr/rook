@@ -49,9 +49,7 @@ const (
 	CmdReporterConfigMapRetcodeKey = "retcode"
 )
 
-var (
-	logger = capnslog.NewPackageLogger("github.com/rook/rook", "job-reporter-cmd")
-)
+var logger = capnslog.NewPackageLogger("github.com/rook/rook", "job-reporter-cmd")
 
 // CmdReporter is a process intended to be run in simple Kubernetes jobs. The CmdReporter runs a
 // command in a job and stores the results in a ConfigMap which can be read by the operator.
@@ -67,7 +65,7 @@ type CmdReporter struct {
 // NewCmdReporter creates a new CmdReporter and returns an error if cmd, configMapName, or Namespace aren't specified.
 func NewCmdReporter(context context.Context, clientset kubernetes.Interface, cmd, args []string, configMapName, namespace string) (*CmdReporter, error) {
 	if clientset == nil {
-		return nil, fmt.Errorf("Kubernetes client interface was not specified")
+		return nil, fmt.Errorf("kubernetes client interface was not specified")
 	}
 	if len(cmd) == 0 || cmd[0] == "" {
 		return nil, fmt.Errorf("cmd was not specified")
@@ -133,7 +131,7 @@ func CmdReporterFlagArgumentToCommand(flagArg string) (cmd []string, args []stri
 // return an error if the command could not be run for any reason or if there was
 // an error storing the command results into the ConfigMap. An application label
 // is applied to the ConfigMap, and if the label already exists and has a
-// different application's name name, this returns an error, as this may indicate
+// different application's name, this returns an error, as this may indicate
 // that it is not safe for cmd-reporter to edit the ConfigMap.
 func (r *CmdReporter) Run() error {
 	stdout, stderr, retcode, err := r.runCommand()
@@ -228,8 +226,8 @@ func (r *CmdReporter) saveToConfigMap(stdout, stderr string, retcode int) error 
 		cm.Labels[k8sutil.AppAttr] = CmdReporterAppName
 	} else if ok && app != "" && app != CmdReporterAppName {
 		// label is set and not equal to the cmd-reporter app name
-		return fmt.Errorf("ConfigMap [%s] already has label [%s] that differs from cmd-reporter's "+
-			"label [%s]; this may indicate that it is not safe for cmd-reporter to modify the ConfigMap.",
+		return fmt.Errorf("configMap [%s] already has label [%s] that differs from cmd-reporter's "+
+			"label [%s]; this may indicate that it is not safe for cmd-reporter to modify the ConfigMap",
 			r.configMapName, fmt.Sprintf("%s=%s", k8sutil.AppAttr, app), fmt.Sprintf("%s=%s", k8sutil.AppAttr, CmdReporterAppName))
 	}
 

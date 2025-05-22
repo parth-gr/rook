@@ -108,14 +108,8 @@ func (c *ClusterController) configureExternalCephCluster(cluster *cluster) error
 		}
 	}
 
-	// Create CSI config map
-	err = csi.CreateCsiConfigMap(c.OpManagerCtx, c.namespacedName.Namespace, c.context.Clientset, cluster.ownerInfo)
-	if err != nil {
-		return errors.Wrap(err, "failed to create csi config map")
-	}
-
 	// update the msgr2 flag
-	for _, m := range cluster.ClusterInfo.Monitors {
+	for _, m := range cluster.ClusterInfo.InternalMonitors {
 		// m.Endpoint=10.1.115.104:3300
 		monPort := util.GetPortFromEndpoint(m.Endpoint)
 		if monPort == client.Msgr2port {
@@ -129,14 +123,16 @@ func (c *ClusterController) configureExternalCephCluster(cluster *cluster) error
 	}
 
 	// Save CSI configmap
-	monEndpoints := csi.MonEndpoints(cluster.ClusterInfo.Monitors, cluster.Spec.RequireMsgr2())
+	monEndpoints := csi.MonEndpoints(cluster.ClusterInfo.InternalMonitors, cluster.Spec.RequireMsgr2())
 	csiConfigEntry := &csi.CSIClusterConfigEntry{
 		Namespace: cluster.ClusterInfo.Namespace,
 		ClusterInfo: cephcsi.ClusterInfo{
 			Monitors: monEndpoints,
 		},
 	}
-	err = csi.SaveClusterConfig(c.context.Clientset, c.namespacedName.Namespace, cluster.ClusterInfo, csiConfigEntry)
+
+	clusterId := c.namespacedName.Namespace // cluster id is same as cluster namespace for CephClusters
+	err = csi.SaveClusterConfig(c.context.Clientset, clusterId, c.namespacedName.Namespace, cluster.ClusterInfo, csiConfigEntry)
 	if err != nil {
 		return errors.Wrap(err, "failed to update csi cluster config")
 	}
@@ -147,6 +143,17 @@ func (c *ClusterController) configureExternalCephCluster(cluster *cluster) error
 		err = nodedaemon.CreateCrashCollectorSecret(c.context, cluster.ClusterInfo)
 		if err != nil {
 			return errors.Wrap(err, "failed to create crash collector kubernetes secret")
+		}
+	}
+	// Create exporter secret
+	if !cluster.Spec.Monitoring.MetricsDisabled {
+		if cluster.ClusterInfo.CephCred.Username == client.AdminUsername &&
+			cluster.ClusterInfo.CephCred.Secret != opcontroller.AdminSecretNameKey {
+
+			err = nodedaemon.CreateExporterSecret(c.context, cluster.ClusterInfo)
+			if err != nil {
+				return errors.Wrap(err, "failed to create exporter kubernetes secret")
+			}
 		}
 	}
 
@@ -166,6 +173,18 @@ func (c *ClusterController) configureExternalCephCluster(cluster *cluster) error
 		err = c.configureExternalClusterMonitoring(c.context, cluster)
 		if err != nil {
 			return errors.Wrap(err, "failed to configure external cluster monitoring")
+		}
+	}
+
+	if csi.EnableCSIOperator() {
+		logger.Info("create cephConnection and defaultClientProfile for external mode")
+		err = csi.CreateUpdateCephConnection(c.context.Client, cluster.ClusterInfo, *cluster.Spec)
+		if err != nil {
+			return errors.Wrap(err, "failed to create/update cephConnection")
+		}
+		err = csi.CreateDefaultClientProfile(c.context.Client, cluster.ClusterInfo, cluster.ClusterInfo.NamespacedName())
+		if err != nil {
+			return errors.Wrap(err, "failed to create/update default client profile")
 		}
 	}
 

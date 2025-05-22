@@ -10,8 +10,9 @@ The Ceph COSI driver provisions buckets for object storage. This document instru
 ## Prerequisites
 
 COSI requires:
+
 1. A running Rook [object store](object-storage.md)
-2. [COSI controller](https://github.com/kubernetes-sigs/container-object-storage-interface-controller#readme)
+2. [COSI controller](https://github.com/kubernetes-sigs/container-object-storage-interface#readme)
 
 Deploy the COSI controller with these commands:
 
@@ -32,6 +33,20 @@ metadata:
   namespace: rook-ceph
 spec:
   deploymentStrategy: "Auto"
+---
+# The Ceph-COSI driver needs a privileged user for each CephObjectStore
+# in order to provision buckets and users
+apiVersion: ceph.rook.io/v1
+kind: CephObjectStoreUser
+metadata:
+  name: cosi
+  namespace: rook-ceph # rook operator namespace
+spec:
+  displayName: "cosi user"
+  store: my-store # name of the CephObjectStore
+  capabilities:
+    bucket: "*"
+    user: "*"
 ```
 
 ```console
@@ -39,30 +54,30 @@ cd deploy/examples/cosi
 kubectl create -f cephcosidriver.yaml
 ```
 
-The driver is created in the same namespace as Rook operator.
-
 ## Admin Operations
 
 ### Create a BucketClass and BucketAccessClass
 
-The BucketClass and BucketAccessClass are CRDs defined by COSI. The BucketClass defines the bucket class for the bucket. The BucketAccessClass defines the access class for the bucket. Rook will automatically create a secret named with `rook-ceph-object-user-<store-name>-cosi` which contains credentials used by the COSI driver. This secret is referred by the BucketClass and BucketAccessClass as defined below:
+The BucketClass and BucketAccessClass are CRDs defined by COSI. The BucketClass defines the storage class for the bucket. The BucketAccessClass defines the access class for the bucket. The BucketClass and BucketAccessClass are defined as below:
 
 ```yaml
 kind: BucketClass
 apiVersion: objectstorage.k8s.io/v1alpha1
 metadata:
   name: sample-bcc
-driverName: ceph.objectstorage.k8s.io
+driverName: rook-ceph.ceph.objectstorage.k8s.io
 deletionPolicy: Delete
 parameters:
   objectStoreUserSecretName: rook-ceph-object-user-my-store-cosi
   objectStoreUserSecretNamespace: rook-ceph
----
+```
+
+```yaml
 kind: BucketAccessClass
 apiVersion: objectstorage.k8s.io/v1alpha1
 metadata:
   name: sample-bac
-driverName: ceph.objectstorage.k8s.io
+driverName: rook-ceph.ceph.objectstorage.k8s.io
 authenticationType: KEY
 parameters:
   objectStoreUserSecretName: rook-ceph-object-user-my-store-cosi
@@ -72,6 +87,8 @@ parameters:
 ```console
 kubectl create -f bucketclass.yaml -f bucketaccessclass.yaml
 ```
+
+The `objectStoreUserSecretName` and `objectStoreUserSecretNamespace` are the name and namespace of the CephObjectStoreUser created in the previous step.
 
 ## User Operations
 

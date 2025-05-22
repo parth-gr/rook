@@ -24,9 +24,11 @@ import (
 	"github.com/kube-object-storage/lib-bucket-provisioner/pkg/provisioner"
 	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
+	opcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
 	cephObject "github.com/rook/rook/pkg/operator/ceph/object"
 	storagev1 "k8s.io/api/storage/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
@@ -41,9 +43,9 @@ const (
 	objectStoreEndpoint  = "endpoint"
 )
 
-func NewBucketController(cfg *rest.Config, p *Provisioner, data map[string]string) (*provisioner.Provisioner, error) {
+func NewBucketController(cfg *rest.Config, p *Provisioner) (*provisioner.Provisioner, error) {
 	const allNamespaces = ""
-	provName, err := cephObject.GetObjectBucketProvisioner(data, p.clusterInfo.Namespace)
+	provName, err := cephObject.GetObjectBucketProvisioner(p.clusterInfo.Namespace)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get provisioner name")
 	}
@@ -87,12 +89,75 @@ func (p *Provisioner) getObjectStore() (*cephv1.CephObjectStore, error) {
 	return store, err
 }
 
-func MaxObjectQuota(AdditionalConfig map[string]string) string {
-	return AdditionalConfig["maxObjects"]
-}
+func additionalConfigSpecFromMap(config map[string]string) (*additionalConfigSpec, error) {
+	var err error
+	spec := additionalConfigSpec{}
 
-func MaxSizeQuota(AdditionalConfig map[string]string) string {
-	return AdditionalConfig["maxSize"]
+	if _, ok := config["maxObjects"]; ok {
+		if !opcontroller.ObcAdditionalConfigKeyIsAllowed("maxObjects") {
+			return nil, errors.Errorf("OBC config %q is not allowed", "maxObjects")
+		}
+		spec.maxObjects, err = quanityToInt64(config["maxObjects"])
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to parse maxObjects quota")
+		}
+	}
+
+	if _, ok := config["maxSize"]; ok {
+		if !opcontroller.ObcAdditionalConfigKeyIsAllowed("maxSize") {
+			return nil, errors.Errorf("OBC config %q is not allowed", "maxSize")
+		}
+		spec.maxSize, err = quanityToInt64(config["maxSize"])
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to parse maxSize quota")
+		}
+	}
+
+	if _, ok := config["bucketMaxObjects"]; ok {
+		if !opcontroller.ObcAdditionalConfigKeyIsAllowed("bucketMaxObjects") {
+			return nil, errors.Errorf("OBC config %q is not allowed", "bucketMaxObjects")
+		}
+		spec.bucketMaxObjects, err = quanityToInt64(config["bucketMaxObjects"])
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to parse bucketMaxObjects quota")
+		}
+	}
+
+	if _, ok := config["bucketMaxSize"]; ok {
+		if !opcontroller.ObcAdditionalConfigKeyIsAllowed("bucketMaxSize") {
+			return nil, errors.Errorf("OBC config %q is not allowed", "bucketMaxSize")
+		}
+		spec.bucketMaxSize, err = quanityToInt64(config["bucketMaxSize"])
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to parse bucketMaxSize quota")
+		}
+	}
+
+	if _, ok := config["bucketPolicy"]; ok {
+		if !opcontroller.ObcAdditionalConfigKeyIsAllowed("bucketPolicy") {
+			return nil, errors.Errorf("OBC config %q is not allowed", "bucketPolicy")
+		}
+		policy := config["bucketPolicy"]
+		spec.bucketPolicy = &policy
+	}
+
+	if _, ok := config["bucketLifecycle"]; ok {
+		if !opcontroller.ObcAdditionalConfigKeyIsAllowed("bucketLifecycle") {
+			return nil, errors.Errorf("OBC config %q is not allowed", "bucketLifecycle")
+		}
+		lifecycle := config["bucketLifecycle"]
+		spec.bucketLifecycle = &lifecycle
+	}
+
+	if _, ok := config["bucketOwner"]; ok {
+		if !opcontroller.ObcAdditionalConfigKeyIsAllowed("bucketOwner") {
+			return nil, errors.Errorf("OBC config %q is not allowed", "bucketOwner")
+		}
+		bucketOwner := config["bucketOwner"]
+		spec.bucketOwner = &bucketOwner
+	}
+
+	return &spec, nil
 }
 
 func GetObjectStoreNameFromBucket(ob *bktv1alpha1.ObjectBucket) (types.NamespacedName, error) {
@@ -127,4 +192,15 @@ func getNSNameFromAdditionalState(state map[string]string) (types.NamespacedName
 		return types.NamespacedName{}, fmt.Errorf("failed to get %q from OB additional state: %v", ObjectStoreNamespace, state)
 	}
 	return types.NamespacedName{Name: name, Namespace: namespace}, nil
+}
+
+func quanityToInt64(qty string) (*int64, error) {
+	n, err := resource.ParseQuantity(qty)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to parse %q as a quantity", qty)
+	}
+
+	value := n.Value()
+
+	return &value, nil
 }

@@ -59,10 +59,6 @@ var (
 	waitForRequeueIfSecretNotCreated = reconcile.Result{Requeue: true, RequeueAfter: 30 * time.Second}
 )
 
-const (
-	MinVersionForCronV1 = "1.21.0"
-)
-
 // ReconcileNode reconciles ReplicaSets
 type ReconcileNode struct {
 	// client can be used to retrieve objects from the APIServer.
@@ -194,8 +190,8 @@ func (r *ReconcileNode) reconcile(request reconcile.Request) (reconcile.Result, 
 		}
 
 		// If the node has Ceph pods we create the daemons
+		tolerations := uniqueTolerations.ToList()
 		if hasCephPods {
-			tolerations := uniqueTolerations.ToList()
 			err := r.createOrUpdateNodeDaemons(*node, tolerations, cephCluster, cephVersion)
 			if err != nil {
 				return reconcile.Result{}, errors.Wrap(err, "node reconcile failed")
@@ -223,7 +219,7 @@ func (r *ReconcileNode) reconcile(request reconcile.Request) (reconcile.Result, 
 			}
 		}
 
-		if err := r.reconcileCrashPruner(namespace, cephCluster, cephVersion); err != nil {
+		if err := r.reconcileCrashPruner(namespace, cephCluster, tolerations); err != nil {
 			return reconcile.Result{}, err
 		}
 	}
@@ -273,7 +269,6 @@ func (r *ReconcileNode) createOrUpdateNodeDaemons(node corev1.Node, tolerations 
 					logger.Debug("service monitor for ceph exporter was enabled successfully")
 				}
 			}
-
 		}
 	}
 

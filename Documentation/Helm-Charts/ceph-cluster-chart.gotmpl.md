@@ -13,7 +13,6 @@ This chart is a simple packaging of templates that will optionally create Rook r
 
 ## Prerequisites
 
-* Kubernetes 1.22+
 * Helm 3.x
 * Install the [Rook Operator chart](operator-chart.md)
 
@@ -23,8 +22,6 @@ The `helm install` command deploys rook on the Kubernetes cluster in the default
 The [configuration](#configuration) section lists the parameters that can be configured during installation. It is
 recommended that the rook operator be installed into the `rook-ceph` namespace. The clusters can be installed
 into the same namespace as the operator or a separate namespace.
-
-Rook currently publishes builds of this chart to the `release` and `master` channels.
 
 **Before installing, review the values.yaml to confirm if the default settings need to be updated.**
 
@@ -38,7 +35,7 @@ Rook currently publishes builds of this chart to the `release` and `master` chan
 
 ### **Release**
 
-The release channel is the most recent release of Rook that is considered stable for the community.
+The `release` channel is the most recent release of Rook that is considered stable for the community.
 
 The example install assumes you have first installed the [Rook Operator Helm Chart](operator-chart.md)
 and created your customized values.yaml.
@@ -80,6 +77,8 @@ The `cephBlockPools` array in the values file will define a list of CephBlockPoo
 | `storageClass.enabled` | Whether a storage class is deployed alongside the CephBlockPool | `true` |
 | `storageClass.isDefault` | Whether the storage class will be the default storage class for PVCs. See [PersistentVolumeClaim documentation](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#persistentvolumeclaims) for details. | `true` |
 | `storageClass.name` | The name of the storage class | `ceph-block` |
+| `storageClass.annotations` | Additional storage class annotations | `{}` |
+| `storageClass.labels` | Additional storage class labels | `{}` |
 | `storageClass.parameters` | See [Block Storage](../Storage-Configuration/Block-Storage-RBD/block-storage.md) documentation or the helm values.yaml for suitable values | see values.yaml |
 | `storageClass.reclaimPolicy` | The default [Reclaim Policy](https://kubernetes.io/docs/concepts/storage/storage-classes/#reclaim-policy) to apply to PVCs created with this storage class. | `Delete` |
 | `storageClass.allowVolumeExpansion` | Whether [volume expansion](https://kubernetes.io/docs/concepts/storage/storage-classes/#allow-volume-expansion) is allowed by default. | `true` |
@@ -96,6 +95,8 @@ The `cephFileSystems` array in the values file will define a list of CephFileSys
 | `spec` | The CephFileSystem spec, see the [CephFilesystem CRD](../CRDs/Shared-Filesystem/ceph-filesystem-crd.md) documentation. | see values.yaml |
 | `storageClass.enabled` | Whether a storage class is deployed alongside the CephFileSystem | `true` |
 | `storageClass.name` | The name of the storage class | `ceph-filesystem` |
+| `storageClass.annotations` | Additional storage class annotations | `{}` |
+| `storageClass.labels` | Additional storage class labels | `{}` |
 | `storageClass.pool` | The name of [Data Pool](../CRDs/Shared-Filesystem/ceph-filesystem-crd.md#pools), without the filesystem name prefix | `data0` |
 | `storageClass.parameters` | See [Shared Filesystem](../Storage-Configuration/Shared-Filesystem-CephFS/filesystem-storage.md) documentation or the helm values.yaml for suitable values | see values.yaml |
 | `storageClass.reclaimPolicy` | The default [Reclaim Policy](https://kubernetes.io/docs/concepts/storage/storage-classes/#reclaim-policy) to apply to PVCs created with this storage class. | `Delete` |
@@ -111,6 +112,8 @@ The `cephObjectStores` array in the values file will define a list of CephObject
 | `spec` | The CephObjectStore spec, see the [CephObjectStore CRD](../CRDs/Object-Storage/ceph-object-store-crd.md) documentation. | see values.yaml |
 | `storageClass.enabled` | Whether a storage class is deployed alongside the CephObjectStore | `true` |
 | `storageClass.name` | The name of the storage class | `ceph-bucket` |
+| `storageClass.annotations` | Additional storage class annotations | `{}` |
+| `storageClass.labels` | Additional storage class labels | `{}` |
 | `storageClass.parameters` | See [Object Store storage class](../Storage-Configuration/Object-Storage-RGW/ceph-object-bucket-claim.md) documentation or the helm values.yaml for suitable values | see values.yaml |
 | `storageClass.reclaimPolicy` | The default [Reclaim Policy](https://kubernetes.io/docs/concepts/storage/storage-classes/#reclaim-policy) to apply to PVCs created with this storage class. | `Delete` |
 | `ingress.enabled` | Enable an ingress for the object store | `false` |

@@ -4,22 +4,15 @@ description: Cluster setup for canary test
 runs:
   using: "composite"
   steps:
-    - name: Free Disk Space (Ubuntu)
-      uses: jlumbroso/free-disk-space@main
-      with:
-        # this might remove tools that are actually needed,
-        # if set to "true" but frees about 6 GB
-        tool-cache: true
-
     - name: setup golang
-      uses: actions/setup-go@v2
+      uses: actions/setup-go@v5
       with:
-        go-version: "1.21"
+        go-version: "1.24"
 
     - name: Setup Minikube
       shell: bash --noprofile --norc -eo pipefail -x {0}
       run: |
-        tests/scripts/github-action-helper.sh install_minikube_with_none_driver v1.29.2
+        tests/scripts/github-action-helper.sh install_minikube_with_none_driver v1.33.0
 
     - name: install deps
       shell: bash --noprofile --norc -eo pipefail -x {0}

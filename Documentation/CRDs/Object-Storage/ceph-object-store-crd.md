@@ -65,8 +65,11 @@ spec:
   #zone:
     #name: zone-a
   #hosting:
-  #  dnsName:
-  #    - "mystore.example.com"
+  #  advertiseEndpoint:
+  #    dnsName: "mystore.example.com"
+  #    port: 80
+  #    useTls: false
+  #  dnsNames:
   #    - "mystore.example.org"
 ```
 
@@ -86,12 +89,89 @@ When the `zone` section is set pools with the object stores name will not be cre
 * `metadataPool`: The settings used to create all of the object store metadata pools. Must use replication.
 * `dataPool`: The settings to create the object store data pool. Can use replication or erasure coding.
 * `preservePoolsOnDelete`: If it is set to 'true' the pools used to support the object store will remain when the object store
-  will be deleted. This is a security measure to avoid accidental loss of data. It is set to 'false' by default. If not specified
-  is also deemed as 'false'.
+    will be deleted. This is a security measure to avoid accidental loss of data. It is set to 'false' by default. If not specified
+    is also deemed as 'false'.
 * `allowUsersInNamespaces`: If a CephObjectStoreUser is created in a namespace other than the Rook cluster namespace,
-  the namespace must be added to this list of allowed namespaces, or specify "*" to allow all namespaces.
-  This is useful for applications that need object store credentials to be created in their own namespace,
-  where neither OBCs nor COSI is being used to create buckets. The default is empty.
+    the namespace must be added to this list of allowed namespaces, or specify "*" to allow all namespaces.
+    This is useful for applications that need object store credentials to be created in their own namespace,
+    where neither OBCs nor COSI is being used to create buckets. The default is empty.
+
+## Auth Settings
+
+The `auth`-section allows the configuration of authentication providers in addition to the regular authentication mechanism.
+
+Currently only OpenStack Keystone is supported.
+
+### Keystone Settings
+
+The keystone authentication can be configured in the `spec.auth.keystone` section of the CRD:
+
+```yaml
+spec:
+  [...]
+  auth:
+    keystone:
+      acceptedRoles:
+        - admin
+        - member
+        - service
+      implicitTenants: "swift"
+      revocationInterval: 1200
+      serviceUserSecretName: usersecret
+      tokenCacheSize: 1000
+      url: https://keystone.example-namespace.svc/
+  protocols:
+    swift:
+      accountInUrl: true
+      urlPrefix: swift
+  [...]
+```
+
+Note: With this example configuration S3 is implicitly enabled even though it is not enabled in the `protocols` section.
+
+The following options can be configured in the `keystone`-section:
+
+* `acceptedRoles`: The OpenStack Keystone [roles](https://docs.openstack.org/keystone/latest/admin/cli-manage-projects-users-and-roles.html#roles-and-role-assignments) accepted by RGW when authenticating against Keystone.
+* `implicitTenants`: Indicates whether to use implicit tenants. This can be `true`, `false`, `swift` and `s3`. For more details see the Ceph RadosGW documentation on [multitenancy](https://docs.ceph.com/en/latest/radosgw/multitenancy/).
+* `revocationInterval`: The number of seconds between token revocation checks.
+* `serviceUserSecretName`: the name of the user secret containing the credentials for the admin user to use by rgw when communicating with Keystone. See [Object Store with Keystone and Swift](../../Storage-Configuration/Object-Storage-RGW/ceph-object-swift.md) for more details on what the secret must contain.
+* `tokenCacheSize`: specifies the maximum number of entries in each Keystone token cache.
+* `url`: The url of the Keystone API endpoint to use.
+
+### Protocols Settings
+
+The protocols section is divided into three parts:
+
+- `enableAPIs` - list of APIs to be enabled in RGW instance. If no values set, all APIs will be enabled. Possible values: `s3, s3website, swift, swift_auth, admin, sts, iam, notifications`. Represents RGW [rgw_enable_apis](https://docs.ceph.com/en/reef/radosgw/config-ref/#confval-rgw_enable_apis) config parameter.
+- a section to configure S3
+- a section to configure swift
+
+```yaml
+spec:
+  [...]
+  protocols:
+    enableAPIs: []
+    swift:
+      # a section to configure swift
+    s3:
+      # a section to configure s3
+  [...]
+```
+
+#### protocols/S3 settings
+
+In the `s3` section of the `protocols` section the following options can be configured:
+
+* `authKeystone`: Whether S3 should also authenticated using Keystone (`true`) or not (`false`). If set to `false` the default S3 auth will be used.
+* `enabled`: Whether to enable S3 (`true`) or not (`false`). The default is `true` even if the section is not listed at all! Please note that S3 should not be disabled in a [Ceph Multi Site configuration](https://docs.ceph.com/en/latest/radosgw/multisite).
+
+#### protocols/swift settings
+
+In the `swift` section of the `protocols` section the following options can be configured:
+
+* `accountInUrl`: Whether or not the Swift account name should be included in the Swift API URL. If set to `false` (the default), the Swift API will listen on a URL formed like `http://host:port/<rgw_swift_url_prefix>/v1`. If set to `true`, the Swift API URL will be `http://host:port/<rgw_swift_url_prefix>/v1/AUTH_<account_name>`. This option must be set to `true` if radosgw should support publicly-readable containers and temporary URLs.
+* `urlPrefix`: The URL prefix for the Swift API, to distinguish it from the S3 API endpoint. The default is `swift`, which makes the Swift API available at the URL `http://host:port/swift/v1` (or `http://host:port/swift/v1/AUTH_%(tenant_id)s` if rgw swift account in url is enabled). "Warning: If you set this option to `/`, the S3 API is automatically disabled. It is not possible to operate radosgw with an urlPrefix of `/` and simultaneously support both the S3 and Swift APIs. [...]" [(see Ceph documentation on swift settings)](https://docs.ceph.com/en/octopus/radosgw/config-ref/#swift-settings).
+* `versioningEnabled`: If set to `true`, enables the Object Versioning of OpenStack Object Storage API. This allows clients to put the X-Versions-Location attribute on containers that should be versioned.
 
 ## Gateway Settings
 
@@ -99,52 +179,78 @@ The gateway settings correspond to the RGW daemon settings.
 
 * `type`: `S3` is supported
 * `sslCertificateRef`: If specified, this is the name of the Kubernetes secret(`opaque` or `tls`
-  type) that contains the TLS certificate to be used for secure connections to the object store.
-  If it is an opaque Kubernetes Secret, Rook will look in the secret provided at the `cert` key name. The value of the `cert` key must be
-  in the format expected by the [RGW
-  service](https://docs.ceph.com/docs/master/install/ceph-deploy/install-ceph-gateway/#using-ssl-with-civetweb):
-  "The server key, server certificate, and any other CA or intermediate certificates be supplied in
-  one file. Each of these items must be in PEM form." They are scenarios where the certificate DNS is set for a particular domain
-  that does not include the local Kubernetes DNS, namely the object store DNS service endpoint. If
-  adding the service DNS name to the certificate is not empty another key can be specified in the
-  secret's data: `insecureSkipVerify: true` to skip the certificate verification. It is not
-  recommended to enable this option since TLS is susceptible to machine-in-the-middle attacks unless
-  custom verification is used.
+    type) that contains the TLS certificate to be used for secure connections to the object store.
+    If it is an opaque Kubernetes Secret, Rook will look in the secret provided at the `cert` key name. The value of the `cert` key must be
+    in the format expected by the [RGW service](https://docs.ceph.com/docs/master/install/ceph-deploy/install-ceph-gateway/#using-ssl-with-civetweb):
+    "The server key, server certificate, and any other CA or intermediate certificates be supplied in
+    one file. Each of these items must be in PEM form." They are scenarios where the certificate DNS is set for a particular domain
+    that does not include the local Kubernetes DNS, namely the object store DNS service endpoint. If
+    adding the service DNS name to the certificate is not empty another key can be specified in the
+    secret's data: `insecureSkipVerify: true` to skip the certificate verification. It is not
+    recommended to enable this option since TLS is susceptible to machine-in-the-middle attacks unless
+    custom verification is used.
 * `caBundleRef`: If specified, this is the name of the Kubernetes secret (type `opaque`) that
-  contains additional custom ca-bundle to use. The secret must be in the same namespace as the Rook
-  cluster. Rook will look in the secret provided at the `cabundle` key name.
+    contains additional custom ca-bundle to use. The secret must be in the same namespace as the Rook
+    cluster. Rook will look in the secret provided at the `cabundle` key name.
 * `hostNetwork`: Whether host networking is enabled for the rgw daemon. If not set, the network settings from the cluster CR will be applied.
 * `port`: The port on which the Object service will be reachable. If host networking is enabled, the RGW daemons will also listen on that port. If running on SDN, the RGW daemon listening port will be 8080 internally.
-* `securePort`: The secure port on which RGW pods will be listening. A TLS certificate must be specified either via `sslCerticateRef` or `service.annotations`
+* `securePort`: The secure port on which RGW pods will be listening. A TLS certificate must be
+    specified either via `sslCerticateRef` or `service.annotations`. Refer to
+    [enabling TLS](../../Storage-Configuration/Object-Storage-RGW/object-storage.md#enabling-tls)
+    documentation for more details.
 * `instances`: The number of pods that will be started to load balance this object store.
 * `externalRgwEndpoints`: A list of IP addresses to connect to external existing Rados Gateways
-  (works with external mode). This setting will be ignored if the `CephCluster` does not have
-  `external` spec enabled. Refer to the [external cluster section](../Cluster/ceph-cluster-crd.md#external-cluster)
-  for more details. Multiple endpoints can be given, but for stability of ObjectBucketClaims, we
-	highly recommend that users give only a single external RGW endpoint that is a load balancer that
-	sends requests to the multiple RGWs.
+    (works with external mode). This setting will be ignored if the `CephCluster` does not have
+    `external` spec enabled. Refer to the [external cluster section](../Cluster/ceph-cluster-crd.md#external-cluster)
+    for more details. Multiple endpoints can be given, but for stability of ObjectBucketClaims, we
+    highly recommend that users give only a single external RGW endpoint that is a load balancer that
+    sends requests to the multiple RGWs.
+
+    Example of external rgw endpoints to connect to:
+
+    ```yaml
+    gateway:
+    port: 80
+    externalRgwEndpoints:
+      - ip: 192.168.39.182
+        # hostname: example.com
+    ```
+
 * `annotations`: Key value pair list of annotations to add.
 * `labels`: Key value pair list of labels to add.
 * `placement`: The Kubernetes placement settings to determine where the RGW pods should be started in the cluster.
 * `resources`: Set resource requests/limits for the Gateway Pod(s), see [Resource Requirements/Limits](../Cluster/ceph-cluster-crd.md#resource-requirementslimits).
 * `priorityClassName`: Set priority class name for the Gateway Pod(s)
+* `additionalVolumeMounts`: additional volumes to be mounted to the RGW pod. The root directory for
+    each additional volume mount is `/var/rgw`. Each volume mount has a `subPath` that defines the
+    subdirectory where that volumes files will be mounted. Rook supports several standard Kubernetes
+    volume types. Example: for an additional mount at subPath `ldap`, mounted from a secret that has
+    key `bindpass.secret`, the file would reside at `/var/rgw/ldap/bindpass.secret`.
 * `service`: The annotations to set on to the Kubernetes Service of RGW. The [service serving cert](https://docs.openshift.com/container-platform/4.6/security/certificates/service-serving-certificate.html) feature supported in Openshift is enabled by the following example:
 
-```yaml
-gateway:
-  service:
-    annotations:
+    ```yaml
+    gateway:
+    service:
+      annotations:
       service.beta.openshift.io/serving-cert-secret-name: <name of TLS secret for automatic generation>
+    ```
+
+* `opsLogSidecar`: By default, all RGW logs are included in the main RGW container logs.
+    For enhanced observability of the operations, the [RGW operations log](https://docs.ceph.com/en/latest/radosgw/config-ref/#confval-rgw_enable_ops_log) can be separated from the main RGW container logs by enabling a sidecar.
+    OpsLogSidecar can be enabled by the following example:
+
+```yaml
+  gateway:
+    opsLogSidecar:
+      resources:
+        requests: {}
+        limits: {}
 ```
 
-Example of external rgw endpoints to connect to:
+Once enabled, logs can be accessed in RGW pod `ops-log` sidecar containers. For example:
 
-```yaml
-gateway:
-  port: 80
-  externalRgwEndpoints:
-    - ip: 192.168.39.182
-      # hostname: example.com
+```sh
+kubectl --namespace rook-ceph logs rook-ceph-rgw-my-store-a-59d48474d8-jv7ps --container ops-log
 ```
 
 ## Zone Settings
@@ -155,9 +261,30 @@ The [zone](../../Storage-Configuration/Object-Storage-RGW/ceph-object-multisite.
 
 ## Hosting Settings
 
-The hosting settings allow you to host buckets in the object store on a custom DNS name, enabling virtual-hosted-style access to buckets similar to AWS S3 (https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html).
+`hosting` settings allow specifying object store endpoint configurations. These settings are only
+supported for Ceph v18 and higher.
 
-* `dnsNames`: a list of DNS names to host buckets on. These names need to valid according RFC-1123. Otherwise it will fail. Each endpoint requires wildcard support like [ingress loadbalancer](https://kubernetes.io/docs/concepts/services-networking/ingress/#hostname-wildcards). Do not include the wildcard itself in the list of hostnames (e.g., use "mystore.example.com" instead of "*.mystore.example.com"). Add all the hostnames like openshift routes otherwise access will be denied, but if the hostname does not support wild card then virtual host style won't work those hostname. By default cephobjectstore service endpoint and custom endpoints from cephobjectzone is included. The feature is supported only for Ceph v18 and later versions.
+A common use case that requires configuring hosting is allowing
+[virtual host-style](https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html)
+bucket access. This use case is discussed in more detail in
+[Rook object storage docs](../../Storage-Configuration/Object-Storage-RGW/object-storage.md#virtual-host-style-bucket-access).
+
+* `advertiseEndpoint`: By default, Rook advertises the most direct connection to RGWs to dependent
+    resources like CephObjectStoreUsers and ObjectBucketClaims. To advertise a different address
+    (e.g., a wildcard-enabled ingress), define the preferred endpoint here. Default behavior is
+    documented in more detail [here](../../Storage-Configuration/Object-Storage-RGW/object-storage.md#object-store-endpoint)
+    * `dnsName`: The valid RFC-1123 (sub)domain name of the endpoint.
+    * `port`: The nonzero port of the endpoint.
+    * `useTls`: Set to true if the endpoint is HTTPS. False if HTTP.
+* `dnsNames`: When this or `advertiseEndpoint` is set, Ceph RGW will reject S3 client connections
+    who attempt to reach the object store via any unspecified DNS name. Add all DNS names that the
+    object store should accept here. These must be valid RFC-1123 (sub)domain names.
+    Rook automatically adds the known CephObjectStore service DNS name to this list, as well as
+    corresponding CephObjectZone `customEndpoints` (if applicable).
+
+!!! Note
+    For DNS names that support wildcards, do not include wildcards.
+    E.g., use `mystore.example.com` instead of `*.mystore.example.com`.
 
 ## Runtime settings
 
@@ -238,9 +365,128 @@ vault kv put rook/<mybucketkey> key=$(openssl rand -base64 32) # kv engine
 vault write -f transit/keys/<mybucketkey> exportable=true # transit engine
 ```
 
-* TLS authentication with custom certificates between Vault and CephObjectStore RGWs are supported from ceph v16.2.6 onwards
 * `tokenSecretName` can be (and often will be) the same for both kms and s3 configurations.
-* `AWS-SSE:S3` requires Ceph Quincy v17.2.3 or later.
+
+## Advanced configuration
+
+!!! warning
+    This feature is intended for advanced users. It allows breaking configurations to be easily
+    applied. Use with caution.
+
+CephObjectStore allows arbitrary Ceph configurations to be applied to RGW daemons that serve the
+object store. [RGW config reference](https://docs.ceph.com/en/latest/radosgw/config-ref/).
+
+Configurations are applied to all RGWs that serve the CephObjectStore. Values must be strings.
+Below is an example showing how different RGW configs and values might be applied. The example is
+intended only to show a selection of value data types.
+
+```yaml
+# THIS SAMPLE IS NOT A RECOMMENDATION
+# ...
+spec:
+  gateway:
+    # ...
+    rgwConfig:
+      debug_rgw: "10" # int
+      # debug-rgw: "20" # equivalent config keys can have dashes or underscores
+      rgw_s3_auth_use_ldap: "true" # bool
+    rgwConfigFromSecret:
+      rgw_keystone_barbican_password: # name of rgw option with secret value
+        name: "barbican-secret" # name of K8s secret 
+        key: "password" # key of secret value in K8s secret.Data map[string]string
+    rgwCommandFlags:
+      rgw_dmclock_auth_res: "100.0" # float
+      rgw_d4n_l1_datacache_persistent_path: /var/log/rook/rgwd4ncache # string
+      rgw_d4n_address: "127.0.0.1:6379" # IP string
+```
+
+* `rgwConfig` - These configurations are applied and modified at runtime, without RGW restart.
+* `rgwConfigFromSecret` - same as `rgwConfig` but config value is referenced from k8s secret.
+* `rgwCommandFlags` - These configurations are applied as CLI arguments and result in RGW daemons
+    restarting when updates are applied. Restarts are desired behavior for some RGW configs.
+
+!!! note
+    Once an `rgwConfig` or `rgwConfigFromSecret` is set, it will not be removed from Ceph's central config store when removed
+    from the `rgwConfig` or `rgwConfigFromSecret` spec. Be sure to specifically set values back to their defaults once done.
+    With this in mind, `rgwCommandFlags` may be a better choice for temporary config values like
+    debug levels.
+
+### Example - debugging
+
+Users are often asked to provide RGW logs at a high log level when troubleshooting complex issues.
+Apply log levels to RGWs easily using `rgwCommandFlags`.
+
+This spec will restart the RGW(s) with the highest level debugging enabled.
+
+```yaml
+# ...
+spec:
+  gateway:
+    # ...
+    rgwCommandFlags:
+      debug_ms: "20"
+      debug_rgw: "20"
+```
+
+Once RGW debug logging is no longer needed, the values can simply be removed from the spec.
+
+### Example - usage with `additionalVolumeMounts`
+
+This sample configuration below demonstrates how advanced configuration can be used alongside
+`additionalVolumeMounts`. This hypothetical scenario shows how a Kubernetes secret containing an
+LDAP secret might be mounted to the RGW pod and how RGW would be configured to reference the mounted
+secret file.
+
+```yaml
+  # ...
+  gateway:
+    # ...
+    rgwConfig:
+      rgw_ldap_secret: /var/rgw/ldap/bindpass.secret
+    additionalVolumeMounts:
+      - subPath: ldap
+        volumeSource:
+          secret:
+            secretName: rgw-ldap
+            defaultMode: 0600
+---
+apiVersion: v1
+kind: Secret
+metadata:
+    name: rgw-ldap
+    namespace: rook-ceph
+type: Opaque
+data:
+    "bindpass.secret": aGVsbG8ud29ybGQK # hello.world
+```
+
+### Example - usage with `rgwConfigFromSecret`
+
+The sample configuration below demonstrates how to securely handle secret configuration parameters when setting up RGW for [Barbican integration](https://docs.ceph.com/en/latest/radosgw/config-ref/#barbican-settings).
+
+```yaml
+  # ...
+  gateway:
+    # ...
+    rgwConfig:
+      rgw_barbican_url: "http://barbican.example.com:9311"
+      rgw_keystone_barbican_domain: "domain"
+      rgw_keystone_barbican_project: "project" 
+      rgw_keystone_barbican_user: "user"
+    rgwConfigFromSecret:
+      rgw_keystone_barbican_password:
+        name: "barbican-secret"
+        key: "password"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: barbican-secret
+  namespace: rook-ceph
+type: Opaque
+data:
+  "password": aGVsbG8ud29ybGQK # hello.world
+```
 
 ## Deleting a CephObjectStore
 
@@ -256,8 +502,8 @@ Kubernetes Custom Resource, but the Ceph pools which store the data will not be 
 Rook will warn about which buckets are blocking deletion in three ways:
 
 1. An event will be registered on the CephObjectStore resource
-1. A status condition will be added to the CephObjectStore resource
-1. An error will be added to the Rook Ceph Operator log
+2. A status condition will be added to the CephObjectStore resource
+3. An error will be added to the Rook Ceph Operator log
 
 If the CephObjectStore is configured in a [multisite setup](../../Storage-Configuration/Object-Storage-RGW/ceph-object-multisite.md) the above conditions are applicable only to stores that belong to a single master zone.
 Otherwise the conditions are ignored. Even if the store is removed the user can access the

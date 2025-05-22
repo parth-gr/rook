@@ -121,6 +121,26 @@ func TestCreateOrUpdateCephExporter(t *testing.T) {
 	assert.Equal(t, tolerations, podSpec.Spec.Tolerations)
 	assert.Equal(t, true, podSpec.Spec.HostNetwork)
 	assert.Equal(t, "test-priority-class", podSpec.Spec.PriorityClassName)
+
+	t.Run("exporter config", func(t *testing.T) {
+		cephCluster.Spec.Monitoring.Exporter = &cephv1.CephExporterSpec{
+			PerfCountersPrioLimit: 3,
+			StatsPeriodSeconds:    7,
+		}
+		res, err := r.createOrUpdateCephExporter(node, tolerations, cephCluster, cephVersion)
+		assert.NoError(t, err)
+		assert.Equal(t, controllerutil.OperationResult("updated"), res)
+
+		err = r.client.Get(ctx, types.NamespacedName{Namespace: "rook-ceph", Name: name}, &deploy)
+		assert.NoError(t, err)
+
+		podSpec := deploy.Spec.Template
+		args := podSpec.Spec.Containers[0].Args
+		assert.Equal(t, "--prio-limit", args[4])
+		assert.Equal(t, "3", args[5])
+		assert.Equal(t, "--stats-period", args[6])
+		assert.Equal(t, "7", args[7])
+	})
 }
 
 func TestCephExporterBindAddress(t *testing.T) {
@@ -181,23 +201,26 @@ func TestApplyCephExporterLabels(t *testing.T) {
 	cephCluster.Spec.PriorityClassNames = cephv1.PriorityClassNamesSpec{}
 
 	sm := &monitoringv1.ServiceMonitor{Spec: monitoringv1.ServiceMonitorSpec{
-		Endpoints: []monitoringv1.Endpoint{{}}}}
+		Endpoints: []monitoringv1.Endpoint{{}},
+	}}
 
 	// Service Monitor RelabelConfigs updated when 'rook.io/managedBy' monitoring label is found
 	monitoringLabels := cephv1.LabelsSpec{
 		cephv1.KeyCephExporter: map[string]string{
-			"rook.io/managedBy": "storagecluster"},
+			"rook.io/managedBy": "storagecluster",
+		},
 	}
 	cephCluster.Spec.Labels = monitoringLabels
 	applyCephExporterLabels(cephCluster, sm)
 	fmt.Printf("Hello1")
 	assert.Equal(t, "managedBy", sm.Spec.Endpoints[0].RelabelConfigs[0].TargetLabel)
-	assert.Equal(t, "storagecluster", sm.Spec.Endpoints[0].RelabelConfigs[0].Replacement)
+	assert.Equal(t, "storagecluster", *sm.Spec.Endpoints[0].RelabelConfigs[0].Replacement)
 
 	// Service Monitor RelabelConfigs not updated when the required monitoring label is not found
 	monitoringLabels = cephv1.LabelsSpec{
 		cephv1.KeyCephExporter: map[string]string{
-			"wrongLabelKey": "storagecluster"},
+			"wrongLabelKey": "storagecluster",
+		},
 	}
 	cephCluster.Spec.Labels = monitoringLabels
 	sm.Spec.Endpoints[0].RelabelConfigs = nil

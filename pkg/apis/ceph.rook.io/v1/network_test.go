@@ -72,9 +72,60 @@ func TestValidateNetworkSpec(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestNetworkCephIsHostLegacy(t *testing.T) {
-	net := NetworkSpec{HostNetwork: true}
+// test the NetworkSpec.IsHost method with different network providers
+// Also test it in combination with the legacy
+// "HostNetwork" setting.
+// Also test the effect of the operator config setting
+// ROOK_ENFORCE_HOST_NETWORK.
+func TestNetworkCephIsHost(t *testing.T) {
+	net := NetworkSpec{HostNetwork: false}
 
+	net.Provider = NetworkProviderHost
+	assert.True(t, net.IsHost())
+
+	net.Provider = NetworkProviderDefault
+	net.HostNetwork = true
+	assert.True(t, net.IsHost())
+
+	// enforcing does not change the result if host network is selected
+	// anyway in the cluster.
+	SetEnforceHostNetwork(true)
+	assert.True(t, net.IsHost())
+
+	SetEnforceHostNetwork(false)
+	assert.True(t, net.IsHost())
+
+	net = NetworkSpec{}
+	net.Provider = NetworkProviderDefault
+	net.HostNetwork = false
+	assert.False(t, net.IsHost())
+
+	net = NetworkSpec{}
+	net.Provider = NetworkProviderMultus
+	net.HostNetwork = false
+	assert.False(t, net.IsHost())
+
+	// test that not enforcing does not change the result.
+	SetEnforceHostNetwork(false)
+	assert.False(t, net.IsHost())
+
+	// test enforcing of host network
+	SetEnforceHostNetwork(true)
+	assert.True(t, net.IsHost())
+
+	SetEnforceHostNetwork(false)
+	net = NetworkSpec{}
+	net.Provider = NetworkProviderMultus
+	net.HostNetwork = true
+	assert.False(t, net.IsHost())
+
+	// test with nonempty but invalid provider
+	net = NetworkSpec{}
+	net.HostNetwork = true
+	net.Provider = "foo"
+	SetEnforceHostNetwork(false)
+	assert.False(t, net.IsHost())
+	SetEnforceHostNetwork(true)
 	assert.True(t, net.IsHost())
 }
 
@@ -123,7 +174,6 @@ func TestAddressRangesSpec_IsEmpty(t *testing.T) {
 	for _, spec := range nonEmptyTests {
 		assert.False(t, spec.IsEmpty())
 	}
-
 }
 
 func TestAddressRangesSpec_Validate(t *testing.T) {

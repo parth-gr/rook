@@ -74,6 +74,7 @@ func DetectCephVersion(ctx context.Context, rookImage, namespace, jobName string
 		rookImage,
 		cephImage,
 		cephClusterSpec.CephVersion.ImagePullPolicy,
+		cephClusterSpec.Resources,
 	)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to set up ceph version job")
@@ -85,6 +86,9 @@ func DetectCephVersion(ctx context.Context, rookImage, namespace, jobName string
 	// Apply the same placement for the ceph version detection as the mon daemons except for PodAntiAffinity
 	cephv1.GetMonPlacement(cephClusterSpec.Placement).ApplyToPodSpec(&job.Spec.Template.Spec)
 	job.Spec.Template.Spec.Affinity.PodAntiAffinity = nil
+
+	cephv1.GetCmdReporterAnnotations(cephClusterSpec.Annotations).ApplyToObjectMeta(&job.Spec.Template.ObjectMeta)
+	cephv1.GetCmdReporterLabels(cephClusterSpec.Labels).ApplyToObjectMeta(&job.Spec.Template.ObjectMeta)
 
 	stdout, stderr, retcode, err := versionReporter.Run(ctx, detectCephVersionTimeout)
 	if err != nil {

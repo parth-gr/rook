@@ -26,6 +26,9 @@ import (
 	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
 	"github.com/rook/rook/pkg/clusterd"
+	"github.com/rook/rook/pkg/operator/ceph/version"
+	cephver "github.com/rook/rook/pkg/operator/ceph/version"
+	"github.com/rook/rook/pkg/util/exec"
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
@@ -49,9 +52,15 @@ type Images struct {
 	Name string
 }
 
+const (
+	mirrorModeDisabled = "disabled"
+	mirrorModeInitOnly = "init-only"
+)
+
 var (
-	rbdMirrorPeerCaps      = []string{"mon", "profile rbd-mirror-peer", "osd", "profile rbd"}
-	rbdMirrorPeerKeyringID = "rbd-mirror-peer"
+	rbdMirrorPeerCaps                     = []string{"mon", "profile rbd-mirror-peer", "osd", "profile rbd"}
+	rbdMirrorPeerKeyringID                = "rbd-mirror-peer"
+	radosNamespaceMirroringMinimumVersion = cephver.CephVersion{Major: 20, Minor: 0, Extra: 0}
 )
 
 // ImportRBDMirrorBootstrapPeer add a mirror peer in the rbd-mirror configuration
@@ -66,7 +75,7 @@ func ImportRBDMirrorBootstrapPeer(context *clusterd.Context, clusterInfo *Cluste
 	}
 
 	// Write token into a file
-	err = os.WriteFile(tokenFilePath.Name(), token, 0400)
+	err = os.WriteFile(tokenFilePath.Name(), token, 0o400)
 	if err != nil {
 		return errors.Wrapf(err, "failed to write token to file %q", tokenFilePath.Name())
 	}
@@ -85,7 +94,7 @@ func ImportRBDMirrorBootstrapPeer(context *clusterd.Context, clusterInfo *Cluste
 	cmd := NewRBDCommand(context, clusterInfo, args)
 
 	// Run command
-	output, err := cmd.Run()
+	output, err := cmd.RunWithTimeout(exec.CephCommandsTimeout)
 	if err != nil {
 		return errors.Wrapf(err, "failed to add rbd-mirror peer token for pool %q. %s", poolName, output)
 	}
@@ -115,6 +124,20 @@ func CreateRBDMirrorBootstrapPeer(context *clusterd.Context, clusterInfo *Cluste
 // enablePoolMirroring turns on mirroring on that pool by specifying the mirroring type
 func enablePoolMirroring(context *clusterd.Context, clusterInfo *ClusterInfo, pool cephv1.NamedPoolSpec) error {
 	logger.Infof("enabling mirroring type %q for pool %q", pool.Mirroring.Mode, pool.Name)
+
+	if pool.Mirroring.Mode == mirrorModeInitOnly && !clusterInfo.CephVersion.IsAtLeastTentacle() {
+		return fmt.Errorf("ceph version %q does not support mirroring mode %s, minimum ceph version required is %q", clusterInfo.CephVersion.String(), pool.Mirroring.Mode, version.Tentacle.String())
+	}
+
+	mirrorInfo, err := GetPoolMirroringInfo(context, clusterInfo, pool.Name)
+	if err != nil {
+		return errors.Wrapf(err, "failed to get mirroring info for the pool %q", pool.Name)
+	}
+
+	if pool.Mirroring.Mode == mirrorInfo.Mode {
+		logger.Debugf("mirroring is already enabled on the pool %s with mode %s", pool.Name, mirrorInfo.Mode)
+		return nil
+	}
 
 	// Build command
 	args := []string{"mirror", "pool", "enable", pool.Name, pool.Mirroring.Mode}
@@ -163,7 +186,7 @@ func RemoveClusterPeer(context *clusterd.Context, clusterInfo *ClusterInfo, pool
 }
 
 // GetPoolMirroringStatus prints the pool mirroring status
-func GetPoolMirroringStatus(context *clusterd.Context, clusterInfo *ClusterInfo, poolName string) (*cephv1.PoolMirroringStatus, error) {
+func GetPoolMirroringStatus(context *clusterd.Context, clusterInfo *ClusterInfo, poolName string) (*cephv1.MirroringStatus, error) {
 	logger.Debugf("retrieving mirroring pool %q status", poolName)
 
 	// Build command
@@ -177,9 +200,17 @@ func GetPoolMirroringStatus(context *clusterd.Context, clusterInfo *ClusterInfo,
 		return nil, errors.Wrapf(err, "failed to retrieve mirroring pool %q status", poolName)
 	}
 
-	var poolMirroringStatus cephv1.PoolMirroringStatus
+	var poolMirroringStatus cephv1.MirroringStatus
 	if err := json.Unmarshal([]byte(buf), &poolMirroringStatus); err != nil {
 		return nil, errors.Wrap(err, "failed to unmarshal mirror pool status response")
+	}
+
+	if poolMirroringStatus.Summary != nil {
+		// for backward compatibility, we need to set the states field
+		// so to avoid breaking changes in the CRD that rook user might be using
+		if poolMirroringStatus.Summary.ImageStates != nil {
+			poolMirroringStatus.Summary.States = *poolMirroringStatus.Summary.ImageStates
+		}
 	}
 
 	return &poolMirroringStatus, nil
@@ -209,7 +240,8 @@ func GetMirroredPoolImages(context *clusterd.Context, clusterInfo *ClusterInfo, 
 }
 
 // GetPoolMirroringInfo  prints the pool mirroring information
-func GetPoolMirroringInfo(context *clusterd.Context, clusterInfo *ClusterInfo, poolName string) (*cephv1.PoolMirroringInfo, error) {
+// `poolName` is the name of the pool or the pool/radosNamespace
+func GetPoolMirroringInfo(context *clusterd.Context, clusterInfo *ClusterInfo, poolName string) (*cephv1.MirroringInfo, error) {
 	logger.Debugf("retrieving mirroring pool %q info", poolName)
 
 	// Build command
@@ -224,7 +256,7 @@ func GetPoolMirroringInfo(context *clusterd.Context, clusterInfo *ClusterInfo, p
 	}
 
 	// Unmarshal JSON into Go struct
-	var poolMirroringInfo cephv1.PoolMirroringInfo
+	var poolMirroringInfo cephv1.MirroringInfo
 	if err := json.Unmarshal(buf, &poolMirroringInfo); err != nil {
 		return nil, errors.Wrap(err, "failed to unmarshal mirror pool info response")
 	}
@@ -278,17 +310,18 @@ func removeSnapshotSchedule(context *clusterd.Context, clusterInfo *ClusterInfo,
 	return nil
 }
 
-func enableSnapshotSchedules(context *clusterd.Context, clusterInfo *ClusterInfo, pool cephv1.NamedPoolSpec) error {
-	logger.Info("resetting current snapshot schedules")
+// `poolName` is the name of the pool or the pool/radosNamespace
+func EnableSnapshotSchedules(context *clusterd.Context, clusterInfo *ClusterInfo, poolName string, snapshotSchedules []cephv1.SnapshotScheduleSpec) error {
+	logger.Info("resetting current snapshot schedules in cluster namespace %q", clusterInfo.Namespace)
 	// Reset any existing schedules
-	err := removeSnapshotSchedules(context, clusterInfo, pool)
+	err := removeSnapshotSchedules(context, clusterInfo, poolName)
 	if err != nil {
 		logger.Errorf("failed to remove snapshot schedules. %v", err)
 	}
 
 	// Enable all the snap schedules
-	for _, snapSchedule := range pool.Mirroring.SnapshotSchedules {
-		err := enableSnapshotSchedule(context, clusterInfo, snapSchedule, pool.Name)
+	for _, snapSchedule := range snapshotSchedules {
+		err := enableSnapshotSchedule(context, clusterInfo, snapSchedule, poolName)
 		if err != nil {
 			return errors.Wrap(err, "failed to enable snapshot schedule")
 		}
@@ -298,16 +331,16 @@ func enableSnapshotSchedules(context *clusterd.Context, clusterInfo *ClusterInfo
 }
 
 // removeSnapshotSchedules removes all the existing snapshot schedules
-func removeSnapshotSchedules(context *clusterd.Context, clusterInfo *ClusterInfo, pool cephv1.NamedPoolSpec) error {
+func removeSnapshotSchedules(context *clusterd.Context, clusterInfo *ClusterInfo, pool string) error {
 	// Get the list of existing snapshot schedule
-	existingSnapshotSchedules, err := listSnapshotSchedules(context, clusterInfo, pool.Name)
+	existingSnapshotSchedules, err := listSnapshotSchedules(context, clusterInfo, pool)
 	if err != nil {
 		return errors.Wrap(err, "failed to list snapshot schedule(s)")
 	}
 
 	// Remove each schedule
 	for _, existingSnapshotSchedule := range existingSnapshotSchedules {
-		err := removeSnapshotSchedule(context, clusterInfo, existingSnapshotSchedule, pool.Name)
+		err := removeSnapshotSchedule(context, clusterInfo, existingSnapshotSchedule, pool)
 		if err != nil {
 			return errors.Wrapf(err, "failed to remove snapshot schedule %v", existingSnapshotSchedule)
 		}
@@ -362,6 +395,49 @@ func ListSnapshotSchedulesRecursively(context *clusterd.Context, clusterInfo *Cl
 	return snapshotSchedulesRecursive, nil
 }
 
+// EnableRBDRadosNamespaceMirroring enables rbd mirroring on a rados namespace.
+func EnableRBDRadosNamespaceMirroring(context *clusterd.Context, clusterInfo *ClusterInfo, poolAndRadosNamespaceName string, remoteNamespace *string, mode string) error {
+	logger.Infof("enable mirroring in rados namespace %s in k8s namespace %q", poolAndRadosNamespaceName, clusterInfo.Namespace)
+
+	// remove the check when the min supported version is 20.0.0
+	if !clusterInfo.CephVersion.IsAtLeast(radosNamespaceMirroringMinimumVersion) {
+		return errors.Errorf("ceph version %q does not support mirroring in rados namespace %q with --remote-namespace flag, supported version are v20 and above.", clusterInfo.CephVersion.String(), poolAndRadosNamespaceName)
+	}
+
+	if remoteNamespace != nil && *remoteNamespace == cephv1.ImplicitNamespaceKey {
+		*remoteNamespace = cephv1.ImplicitNamespaceVal
+	}
+
+	args := []string{"mirror", "pool", "enable", poolAndRadosNamespaceName, mode}
+	if remoteNamespace != nil {
+		args = []string{"mirror", "pool", "enable", poolAndRadosNamespaceName, mode, "--remote-namespace", *remoteNamespace}
+	}
+
+	cmd := NewRBDCommand(context, clusterInfo, args)
+	cmd.JsonOutput = false
+	output, err := cmd.Run()
+	if err != nil {
+		return errors.Wrapf(err, "failed to enable mirroring in rados namespace %s with mode %s. %s", poolAndRadosNamespaceName, mode, output)
+	}
+
+	logger.Infof("successfully enabled mirroring in rados namespace %s in k8s namespace %q", poolAndRadosNamespaceName, clusterInfo.Namespace)
+	return nil
+}
+
+func DisableRBDRadosNamespaceMirroring(context *clusterd.Context, clusterInfo *ClusterInfo, poolAndRadosNamespaceName string) error {
+	logger.Infof("disable mirroring in rados namespace %s in k8s namespace %q", poolAndRadosNamespaceName, clusterInfo.Namespace)
+	args := []string{"mirror", "pool", "disable", poolAndRadosNamespaceName}
+	cmd := NewRBDCommand(context, clusterInfo, args)
+	cmd.JsonOutput = false
+	output, err := cmd.Run()
+	if err != nil {
+		return errors.Wrapf(err, "failed to disable mirroring in rados namespace %s. %s", poolAndRadosNamespaceName, output)
+	}
+
+	logger.Infof("successfully disabled mirroring in rados namespace %s in k8s namespace %q", poolAndRadosNamespaceName, clusterInfo.Namespace)
+	return nil
+}
+
 /*
 	CreateRBDMirrorBootstrapPeerWithoutPool creates a bootstrap peer for the current cluster
 
@@ -397,7 +473,7 @@ func CreateRBDMirrorBootstrapPeerWithoutPool(context *clusterd.Context, clusterI
 	logger.Infof("successfully created rbd-mirror bootstrap peer token for cluster %q", clusterInfo.NamespacedName().Name)
 
 	mons := sets.New[string]()
-	for _, mon := range clusterInfo.Monitors {
+	for _, mon := range clusterInfo.AllMonitors() {
 		mons.Insert(mon.Endpoint)
 	}
 

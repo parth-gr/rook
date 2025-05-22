@@ -12,7 +12,7 @@ This guide will walk through the basic setup of a Ceph cluster and enable K8s ap
 
 ## Kubernetes Version
 
-Kubernetes versions **v1.25** through **v1.29** are supported.
+Kubernetes versions **v1.28** through **v1.33** are supported.
 
 ## CPU Architecture
 
@@ -187,7 +187,7 @@ The Rook maintainers would like to receive telemetry reports for Rook clusters.
 The data is anonymous and does not include any identifying information.
 Enable the telemetry reporting feature with the following command in the toolbox:
 
-```
+```console
 ceph telemetry on
 ```
 

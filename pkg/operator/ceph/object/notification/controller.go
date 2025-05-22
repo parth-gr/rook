@@ -53,10 +53,12 @@ const (
 
 var logger = capnslog.NewPackageLogger("github.com/rook/rook", packageName)
 
-var waitForRequeueIfTopicNotReady = reconcile.Result{Requeue: true, RequeueAfter: 10 * time.Second}
-var waitForRequeueIfNotificationNotReady = reconcile.Result{Requeue: true, RequeueAfter: 10 * time.Second}
-var waitForRequeueIfObjectBucketNotReady = reconcile.Result{Requeue: true, RequeueAfter: 10 * time.Second}
-var waitForRequeueIfNotificationNotDeleted = reconcile.Result{Requeue: true, RequeueAfter: 10 * time.Second}
+var (
+	waitForRequeueIfTopicNotReady          = reconcile.Result{Requeue: true, RequeueAfter: 10 * time.Second}
+	waitForRequeueIfNotificationNotReady   = reconcile.Result{Requeue: true, RequeueAfter: 10 * time.Second}
+	waitForRequeueIfObjectBucketNotReady   = reconcile.Result{Requeue: true, RequeueAfter: 10 * time.Second}
+	waitForRequeueIfNotificationNotDeleted = reconcile.Result{Requeue: true, RequeueAfter: 10 * time.Second}
+)
 
 // ReconcileNotifications reconciles a CephbucketNotification
 type ReconcileNotifications struct {
@@ -100,7 +102,14 @@ func addNotificationReconciler(mgr manager.Manager, r reconcile.Reconciler) erro
 	logger.Info("successfully started")
 
 	// Watch for changes on the OBC CRD object
-	err = c.Watch(source.Kind(mgr.GetCache(), &cephv1.CephBucketNotification{}), &handler.EnqueueRequestForObject{}, opcontroller.WatchControllerPredicate())
+	err = c.Watch(
+		source.Kind(
+			mgr.GetCache(),
+			&cephv1.CephBucketNotification{},
+			&handler.TypedEnqueueRequestForObject[*cephv1.CephBucketNotification]{},
+			opcontroller.WatchControllerPredicate[*cephv1.CephBucketNotification](mgr.GetScheme()),
+		),
+	)
 	if err != nil {
 		return err
 	}

@@ -15,18 +15,18 @@ for more info.
 
 ## RBD Volume Cloning
 
-### Volume Clone Prerequisites
-
- 1. Requires Kubernetes v1.16+ which supports volume clone.
- 2. Ceph-csi diver v3.0.0+ which supports volume clone.
-
-### Volume Cloning
-
-In
-[pvc-clone](https://github.com/rook/rook/tree/master/deploy/examples/csi/rbd/pvc-clone.yaml),
+In [pvc-clone](https://github.com/rook/rook/tree/master/deploy/examples/csi/rbd/pvc-clone.yaml),
 `dataSource` should be the name of the `PVC` which is already created by RBD
-CSI driver. The `dataSource` kind should be the `PersistentVolumeClaim` and also storageclass
-should be same as the source `PVC`.
+CSI driver. The `dataSource` kind should be the `PersistentVolumeClaim`.
+The `storageClassName` can be any RBD storageclass (not necessarily same as Parent PVC)
+
+Please note:
+    * `provisioner` must be the same for both the Parent PVC and the Clone PVC.
+    * The non-encrypted PVC cannot be cloned to an encrypted one and vice-versa.
+        * encrypted -> encrypted (possible)
+        * non-encrypted -> non-encrypted (possible)
+        * encrypted -> non-encrypted (not possible)
+        * non-encrypted -> encrypted (not possible)
 
 Create a new PVC Clone from the PVC
 
@@ -40,11 +40,11 @@ kubectl create -f deploy/examples/csi/rbd/pvc-clone.yaml
 kubectl get pvc
 ```
 
->```
->NAME              STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS          AGE
->rbd-pvc           Bound    pvc-74734901-577a-11e9-b34f-525400581048   1Gi        >RWO            rook-ceph-block       34m
->rbd-pvc-clone     Bound    pvc-70473135-577f-11e9-b34f-525400581048   1Gi        RWO            rook-ceph-block       8s
->```
+```console
+NAME              STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS          AGE
+rbd-pvc           Bound    pvc-74734901-577a-11e9-b34f-525400581048   1Gi        RWO            rook-ceph-block       34m
+rbd-pvc-clone     Bound    pvc-70473135-577f-11e9-b34f-525400581048   1Gi        RWO            rook-ceph-block       8s
+```
 
 ## RBD clone resource Cleanup
 
@@ -58,13 +58,10 @@ kubectl delete -f deploy/examples/csi/rbd/pvc-clone.yaml
 
 ### Volume Clone Prerequisites
 
- 1. Requires Kubernetes v1.16+ which supports volume clone.
- 2. Ceph-csi diver v3.1.0+ which supports volume clone.
+1. Requires Kubernetes v1.16+ which supports volume clone.
+2. Ceph-csi diver v3.1.0+ which supports volume clone.
 
-### Volume Cloning
-
-In
-[pvc-clone](https://github.com/rook/rook/tree/master/deploy/examples/csi/cephfs/pvc-clone.yaml),
+In [pvc-clone](https://github.com/rook/rook/tree/master/deploy/examples/csi/cephfs/pvc-clone.yaml),
 `dataSource` should be the name of the `PVC` which is already created by CephFS
 CSI driver. The `dataSource` kind should be the `PersistentVolumeClaim` and also storageclass
 should be same as the source `PVC`.
@@ -81,11 +78,11 @@ kubectl create -f deploy/examples/csi/cephfs/pvc-clone.yaml
 kubectl get pvc
 ```
 
->```
->NAME              STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
->cephfs-pvc        Bound    pvc-1ea51547-a88b-4ab0-8b4a-812caeaf025d   1Gi        RWX            rook-cephfs    39m
->cephfs-pvc-clone  Bound    pvc-b575bc35-d521-4c41-b4f9-1d733cd28fdf   1Gi        RWX            rook-cephfs    8s
->```
+```console
+NAME              STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+cephfs-pvc        Bound    pvc-1ea51547-a88b-4ab0-8b4a-812caeaf025d   1Gi        RWX            rook-cephfs    39m
+cephfs-pvc-clone  Bound    pvc-b575bc35-d521-4c41-b4f9-1d733cd28fdf   1Gi        RWX            rook-cephfs    8s
+```
 
 ## CephFS clone resource Cleanup
 

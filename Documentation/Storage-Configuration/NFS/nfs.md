@@ -10,7 +10,7 @@ filesystem storage from within the Kubernetes cluster via PVC while simultaneous
 via direct client connection from within or outside of the Kubernetes cluster.
 
 !!! warning
-    Simultaneous access to NFS storage from Pods and from from external clients complicates NFS user
+    Simultaneous access to NFS storage from Pods and from external clients complicates NFS user
     ID mapping significantly. Client IDs mapped from external clients will not be the same as the
     IDs associated with the NFS CSI driver, which mount exports for Kubernetes pods.
 
@@ -64,11 +64,7 @@ The Ceph CLI can be used from the Rook toolbox pod to create and manage NFS expo
 ensure the necessary Ceph mgr modules are enabled, if necessary, and that the Ceph orchestrator
 backend is set to Rook.
 
-#### Enable the Ceph orchestrator if necessary
-
-* Required for Ceph v16.2.7 and below
-* Optional for Ceph v16.2.8 and above
-* Must be disabled for Ceph v17.2.1 due to a [Ceph regression](../../CRDs/ceph-nfs-crd.md#ceph-v1721)
+#### Enable the Ceph orchestrator (optional)
 
 ```console
 ceph mgr module enable rook

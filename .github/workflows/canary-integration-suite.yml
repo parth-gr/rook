@@ -24,9 +24,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   canary-tests:
     uses: ./.github/workflows/canary-integration-test.yml
     with:
-      ceph_images: '["quay.io/ceph/ceph:v18"]'
+      ceph_images: '["quay.io/ceph/ceph:v19"]'
     secrets: inherit

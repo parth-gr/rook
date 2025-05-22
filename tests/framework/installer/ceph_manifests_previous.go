@@ -24,7 +24,7 @@ import (
 
 const (
 	// The version from which the upgrade test will start
-	Version1_13 = "v1.13.6"
+	Version1_16 = "v1.16.6"
 )
 
 // CephManifestsPreviousVersion wraps rook yaml definitions
@@ -43,6 +43,10 @@ func (m *CephManifestsPreviousVersion) GetCRDs(k8shelper *utils.K8sHelper) strin
 
 func (m *CephManifestsPreviousVersion) GetCSINFSRBAC() string {
 	return m.settings.readManifestFromGitHub("/csi/nfs/rbac.yaml")
+}
+
+func (m *CephManifestsPreviousVersion) GetCSIOperator() string {
+	return "not-supported"
 }
 
 // GetRookOperator returns rook Operator manifest
@@ -131,8 +135,11 @@ func (m *CephManifestsPreviousVersion) GetNFSPool() string {
 	return m.latest.GetNFSPool()
 }
 
-func (m *CephManifestsPreviousVersion) GetObjectStore(name string, replicaCount, port int, tlsEnable bool) string {
-	return m.latest.GetObjectStore(name, replicaCount, port, tlsEnable)
+func (m *CephManifestsPreviousVersion) GetObjectStore(name string, replicaCount, port int, tlsEnable bool, swiftAndKeystone bool) string {
+	if swiftAndKeystone {
+		panic("Previous version does not support swift or keystone")
+	}
+	return m.latest.GetObjectStore(name, replicaCount, port, tlsEnable, false)
 }
 
 func (m *CephManifestsPreviousVersion) GetObjectStoreUser(name, displayName, store, usercaps, maxsize string, maxbuckets, maxobjects int) string {

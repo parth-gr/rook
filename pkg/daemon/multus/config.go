@@ -30,13 +30,13 @@ import (
 	metavalidation "k8s.io/apimachinery/pkg/util/validation"
 )
 
-var (
-	//go:embed config.yaml
-	ConfigYaml string
-)
+//go:embed config.yaml
+var ConfigYaml string
 
 var (
 	DefaultValidationNamespace = "rook-ceph"
+
+	DefaultServiceAccountName = "rook-ceph-system"
 
 	DefaultValidationOSDsPerNode = 3
 
@@ -70,13 +70,15 @@ func init() {
 // for this struct from getting out of date, see the output of ValidationTestConfig.ToYAML() for
 // usage text for each field.
 type ValidationTestConfig struct {
-	Namespace       string                `yaml:"namespace"`
-	PublicNetwork   string                `yaml:"publicNetwork"`
-	ClusterNetwork  string                `yaml:"clusterNetwork"`
-	ResourceTimeout time.Duration         `yaml:"resourceTimeout"`
-	FlakyThreshold  time.Duration         `yaml:"flakyThreshold"`
-	NginxImage      string                `yaml:"nginxImage"`
-	NodeTypes       map[string]NodeConfig `yaml:"nodeTypes"`
+	Namespace          string                `yaml:"namespace"`
+	ServiceAccountName string                `yaml:"serviceAccountName"`
+	PublicNetwork      string                `yaml:"publicNetwork"`
+	ClusterNetwork     string                `yaml:"clusterNetwork"`
+	ResourceTimeout    time.Duration         `yaml:"resourceTimeout"`
+	FlakyThreshold     time.Duration         `yaml:"flakyThreshold"`
+	HostCheckOnly      bool                  `yaml:"hostCheckOnly"`
+	NginxImage         string                `yaml:"nginxImage"`
+	NodeTypes          map[string]NodeConfig `yaml:"nodeTypes"`
 }
 
 type NodeConfig struct {
@@ -114,10 +116,11 @@ func (t *TolerationType) ToJSON() (string, error) {
 // The default test is a converged-node test with no placement.
 func NewDefaultValidationTestConfig() *ValidationTestConfig {
 	return &ValidationTestConfig{
-		Namespace:       DefaultValidationNamespace,
-		ResourceTimeout: DefaultValidationResourceTimeout,
-		FlakyThreshold:  DefaultValidationFlakyThreshold,
-		NginxImage:      DefaultValidationNginxImage,
+		Namespace:          DefaultValidationNamespace,
+		ServiceAccountName: DefaultServiceAccountName,
+		ResourceTimeout:    DefaultValidationResourceTimeout,
+		FlakyThreshold:     DefaultValidationFlakyThreshold,
+		NginxImage:         DefaultValidationNginxImage,
 		NodeTypes: map[string]NodeConfig{
 			DefaultValidationNodeType: {
 				OSDsPerNode:         DefaultValidationOSDsPerNode,
@@ -266,10 +269,11 @@ var dedicatedWorkerNodeConfig = NodeConfig{
 
 func NewDedicatedStorageNodesValidationTestConfig() *ValidationTestConfig {
 	return &ValidationTestConfig{
-		Namespace:       DefaultValidationNamespace,
-		ResourceTimeout: DefaultValidationResourceTimeout,
-		FlakyThreshold:  DefaultValidationFlakyThreshold,
-		NginxImage:      DefaultValidationNginxImage,
+		Namespace:          DefaultValidationNamespace,
+		ServiceAccountName: DefaultServiceAccountName,
+		ResourceTimeout:    DefaultValidationResourceTimeout,
+		FlakyThreshold:     DefaultValidationFlakyThreshold,
+		NginxImage:         DefaultValidationNginxImage,
 		NodeTypes: map[string]NodeConfig{
 			DedicatedStorageNodeType: dedicatedStorageNodeConfig,
 			DedicatedWorkerNodeType:  dedicatedWorkerNodeConfig,
@@ -283,10 +287,11 @@ const (
 
 func NewArbiterValidationTestConfig() *ValidationTestConfig {
 	return &ValidationTestConfig{
-		Namespace:       DefaultValidationNamespace,
-		ResourceTimeout: DefaultValidationResourceTimeout,
-		FlakyThreshold:  DefaultValidationFlakyThreshold,
-		NginxImage:      DefaultValidationNginxImage,
+		Namespace:          DefaultValidationNamespace,
+		ServiceAccountName: DefaultServiceAccountName,
+		ResourceTimeout:    DefaultValidationResourceTimeout,
+		FlakyThreshold:     DefaultValidationFlakyThreshold,
+		NginxImage:         DefaultValidationNginxImage,
 		NodeTypes: map[string]NodeConfig{
 			DedicatedStorageNodeType: dedicatedStorageNodeConfig,
 			DedicatedWorkerNodeType:  dedicatedWorkerNodeConfig,

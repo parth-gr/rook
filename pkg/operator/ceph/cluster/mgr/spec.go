@@ -61,6 +61,7 @@ func (c *Cluster) makeDeployment(mgrConfig *mgrConfig) (*apps.Deployment, error)
 			Containers: []v1.Container{
 				c.makeMgrDaemonContainer(mgrConfig),
 			},
+			SecurityContext:    &v1.PodSecurityContext{},
 			ServiceAccountName: serviceAccountName,
 			RestartPolicy:      v1.RestartPolicyAlways,
 			Volumes:            volumes,
@@ -80,16 +81,18 @@ func (c *Cluster) makeDeployment(mgrConfig *mgrConfig) (*apps.Deployment, error)
 				Name: "rook-config",
 				VolumeSource: v1.VolumeSource{
 					EmptyDir: &v1.EmptyDirVolumeSource{},
-				}},
+				},
+			},
 			v1.Volume{
 				Name: "default-config-dir",
 				VolumeSource: v1.VolumeSource{
 					EmptyDir: &v1.EmptyDirVolumeSource{},
-				}},
+				},
+			},
 			mon.CephSecretVolume())
 
 		// Stretch the mgrs across hosts by default, or across a bigger failure domain for when zones are required like in case of stretched cluster
-		topologyKey := v1.LabelHostname
+		topologyKey := k8sutil.LabelHostname()
 		if c.spec.ZonesRequired() {
 			topologyKey = mon.GetFailureDomainLabel(c.spec)
 		}
@@ -100,7 +103,7 @@ func (c *Cluster) makeDeployment(mgrConfig *mgrConfig) (*apps.Deployment, error)
 	if c.spec.LogCollector.Enabled {
 		shareProcessNamespace := true
 		podSpec.Spec.ShareProcessNamespace = &shareProcessNamespace
-		podSpec.Spec.Containers = append(podSpec.Spec.Containers, *controller.LogCollectorContainer(fmt.Sprintf("ceph-mgr.%s", mgrConfig.DaemonID), c.clusterInfo.Namespace, c.spec))
+		podSpec.Spec.Containers = append(podSpec.Spec.Containers, *controller.LogCollectorContainer(fmt.Sprintf("ceph-mgr.%s", mgrConfig.DaemonID), c.clusterInfo.Namespace, c.spec, nil))
 	}
 
 	// Replace default unreachable node toleration
@@ -128,6 +131,7 @@ func (c *Cluster) makeDeployment(mgrConfig *mgrConfig) (*apps.Deployment, error)
 			Labels:    c.getPodLabels(mgrConfig, true),
 		},
 		Spec: apps.DeploymentSpec{
+			RevisionHistoryLimit: controller.RevisionHistoryLimit(),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: c.getPodLabels(mgrConfig, false),
 			},
@@ -161,7 +165,6 @@ func (c *Cluster) makeChownInitContainer(mgrConfig *mgrConfig) v1.Container {
 }
 
 func (c *Cluster) makeMgrDaemonContainer(mgrConfig *mgrConfig) v1.Container {
-
 	container := v1.Container{
 		Name: "mgr",
 		Command: []string{
@@ -191,7 +194,7 @@ func (c *Cluster) makeMgrDaemonContainer(mgrConfig *mgrConfig) v1.Container {
 			},
 			{
 				Name:          "dashboard",
-				ContainerPort: int32(c.dashboardInternalPort()),
+				ContainerPort: int32(c.dashboardInternalPort()), // nolint:gosec // G115 port numbers will not overflow an int32
 				Protocol:      v1.ProtocolTCP,
 			},
 		},
@@ -280,7 +283,6 @@ func (c *Cluster) makeCmdProxySidecarContainer(mgrConfig *mgrConfig) v1.Containe
 
 // MakeMetricsService generates the Kubernetes service object for the monitoring service
 func (c *Cluster) MakeMetricsService(name, servicePortMetricName string) (*v1.Service, error) {
-
 	labels := controller.AppLabels(AppName, c.clusterInfo.Namespace)
 	selectorLabels := c.buildSelectorLabels(labels)
 
@@ -315,7 +317,6 @@ func (c *Cluster) MakeMetricsService(name, servicePortMetricName string) (*v1.Se
 }
 
 func (c *Cluster) makeDashboardService(name string) (*v1.Service, error) {
-
 	labels := controller.AppLabels(AppName, c.clusterInfo.Namespace)
 	selectorLabels := c.buildSelectorLabels(labels)
 
@@ -335,15 +336,17 @@ func (c *Cluster) makeDashboardService(name string) (*v1.Service, error) {
 			Ports: []v1.ServicePort{
 				{
 					Name: portName,
-					Port: int32(c.dashboardPublicPort()),
+					Port: int32(c.dashboardPublicPort()), // nolint:gosec // G115 port numbers will not overflow an int32
 					TargetPort: intstr.IntOrString{
-						IntVal: int32(c.dashboardInternalPort()),
+						IntVal: int32(c.dashboardInternalPort()), // nolint:gosec // G115 port numbers will not overflow an int32
 					},
 					Protocol: v1.ProtocolTCP,
 				},
 			},
 		},
 	}
+	cephv1.GetDashboardAnnotations(c.spec.Annotations).ApplyToObjectMeta(&svc.ObjectMeta)
+	cephv1.GetDashboardLabels(c.spec.Labels).ApplyToObjectMeta(&svc.ObjectMeta)
 	err := c.clusterInfo.OwnerInfo.SetControllerReference(svc)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to set owner reference to dashboard service %q", svc.Name)

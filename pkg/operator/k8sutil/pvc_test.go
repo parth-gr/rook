@@ -30,7 +30,6 @@ import (
 )
 
 func TestExpandPVCIfRequired(t *testing.T) {
-
 	testcases := []struct {
 		label            string
 		currentPVCSize   string
@@ -108,6 +107,12 @@ func TestExpandPVCIfRequired(t *testing.T) {
 		assert.NoError(t, err)
 
 		desiredPVC.Spec.Resources.Requests[v1.ResourceStorage] = apiresource.MustParse(tc.desiredPVCSize)
+
+		desiredPVC.Status = v1.PersistentVolumeClaimStatus{
+			Capacity: v1.ResourceList{
+				v1.ResourceName(v1.ResourceStorage): apiresource.MustParse("2Mi"),
+			},
+		}
 
 		ExpandPVCIfRequired(context.TODO(), cl, desiredPVC, existingPVC)
 

@@ -86,11 +86,9 @@ SUBSYSTEM=block
 `
 )
 
-var (
-	lsblkChildOutput = `NAME="ceph--cec981b8--2eca--45cd--bf91--a4472779f2a9-osd--data--428984b7--f94d--40cd--9cb7--1458e1613eab" MAJ:MIN="252:0" RM="0" SIZE="29G" RO="0" TYPE="lvm" MOUNTPOINT=""
+var lsblkChildOutput = `NAME="ceph--cec981b8--2eca--45cd--bf91--a4472779f2a9-osd--data--428984b7--f94d--40cd--9cb7--1458e1613eab" MAJ:MIN="252:0" RM="0" SIZE="29G" RO="0" TYPE="lvm" MOUNTPOINT=""
 NAME="vdb" MAJ:MIN="253:16" RM="0" SIZE="30G" RO="0" TYPE="disk" MOUNTPOINT=""
 NAME="vdb1" MAJ:MIN="253:17" RM="0" SIZE="30G" RO="0" TYPE="part" MOUNTPOINT=""`
-)
 
 func TestFindUUID(t *testing.T) {
 	output := `Disk /dev/sdb: 10485760 sectors, 5.0 GiB
@@ -197,12 +195,21 @@ func TestListDevicesChildListDevicesChild(t *testing.T) {
 	assert.Equal(t, 3, len(child))
 }
 
-func TestGetDiskDeviceClass(t *testing.T) {
+func TestGetDiskDeviceType(t *testing.T) {
 	d := &LocalDisk{}
-	assert.Equal(t, "ssd", GetDiskDeviceClass(d))
+	assert.Equal(t, "ssd", GetDiskDeviceType(d))
 	d.Rotational = true
-	assert.Equal(t, "hdd", GetDiskDeviceClass(d))
+	assert.Equal(t, "hdd", GetDiskDeviceType(d))
 	d.Rotational = false
 	d.RealPath = "nvme"
-	assert.Equal(t, "nvme", GetDiskDeviceClass(d))
+	assert.Equal(t, "nvme", GetDiskDeviceType(d))
+}
+
+func TestGetDiskDeviceClass(t *testing.T) {
+	t.Setenv("ROOK_OSD_CRUSH_DEVICE_CLASS", "test")
+	assert.Equal(t, "test", GetDiskDeviceClass("ROOK_OSD_CRUSH_DEVICE_CLASS", "hdd"))
+	t.Setenv("ROOK_OSD_CRUSH_DEVICE_CLASS", "test1")
+	assert.Equal(t, "test1", GetDiskDeviceClass("ROOK_OSD_CRUSH_DEVICE_CLASS", "hdd"))
+	t.Setenv("ROOK_OSD_CRUSH_DEVICE_CLASS", "")
+	assert.Equal(t, "nvme", GetDiskDeviceClass("ROOK_OSD_CRUSH_DEVICE_CLASS", "nvme"))
 }

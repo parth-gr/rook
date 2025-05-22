@@ -49,7 +49,7 @@ sed -i.bak \
   common.yaml operator.yaml cluster.yaml # add other files or change these as desired for your config
 
 # You need to use `apply` for all Ceph clusters after the first if you have only one Operator
-kubectl apply -f common.yaml -f operator.yaml -f cluster.yaml # add other files as desired for yourconfig
+kubectl apply -f crds.yaml -f common.yaml -f operator.yaml -f cluster.yaml # add other files as desired for yourconfig
 ```
 
 Also see the CSI driver
@@ -208,11 +208,10 @@ ceph osd pool set rbd pg_num 512
 
 ## Custom `ceph.conf` Settings
 
-!!! warning
-    The advised method for controlling Ceph configuration is to use the [`cephConfig:` structure](../../CRDs/Cluster/ceph-cluster-crd.md#ceph-config)
+!!! info
+    The advised method for controlling Ceph configuration is to use the [`cephConfig`](../../CRDs/Cluster/ceph-cluster-crd.md#ceph-config) and [`cephConfigFromSecret`](../../CRDs/Cluster/ceph-cluster-crd.md#ceph-config-from-secret)
     in the `CephCluster` CRD.
-
-    It is highly recommended that this only be used when absolutely necessary and that the `config` be
+    <br><br>It is highly recommended that this only be used when absolutely necessary and that the `config` be
     reset to an empty string if/when the configurations are no longer necessary. Configurations in the
     config file will make the Ceph cluster less configurable from the CLI and dashboard and may make
     future tuning or debugging difficult.
@@ -235,7 +234,7 @@ has been initialized, each daemon will need to be restarted where you want the s
 
 * mons: ensure all three mons are online and healthy before restarting each mon pod, one at a time.
 * mgrs: the pods are stateless and can be restarted as needed, but note that this will disrupt the
-  Ceph dashboard during restart.
+    Ceph dashboard during restart.
 * OSDs: restart your the pods by deleting them, one at a time, and running `ceph -s`
 between each restart to ensure the cluster goes back to "active/clean" state.
 * RGW: the pods are stateless and can be restarted as needed.
@@ -249,6 +248,22 @@ To automate the restart of the Ceph daemon pods, you will need to trigger an upd
 The simplest way to trigger the update is to add [annotations or labels](../../CRDs/Cluster/ceph-cluster-crd.md#annotations-and-labels)
 to the CephCluster CR for the daemons you want to restart. The operator will then proceed with a rolling
 update, similar to any other update to the cluster.
+
+### Node-specific OSD settings
+
+The OSD ceph config settings can also be customized per-node. This may be helpful for some ceph.conf settings that need to be unique per node depending on the hardware. This can be configured by creating a node-specific configmap that will be loaded for all OSDs and OSD prepare jobs on that node, instead of the default settings that are loaded from the rook-config-override configmap.
+
+The node-specific configmaps must have the label:
+
+```yaml
+node.config.rook.io/osd
+```
+
+The configmaps must follow the naming convention:
+
+```yaml
+rook-config-override-<hostname>
+```
 
 ### Example
 
@@ -358,10 +373,10 @@ sizes vary.  This should work for most use-cases, but the following situations
 could warrant weight changes:
 
 * Your cluster has some relatively slow OSDs or nodes. Lowering their weight can
-  reduce the impact of this bottleneck.
+    reduce the impact of this bottleneck.
 * You're using bluestore drives provisioned with Rook v0.3.1 or older.  In this
-  case you may notice OSD weights did not get set relative to their storage
-  capacity.  Changing the weight can fix this and maximize cluster capacity.
+    case you may notice OSD weights did not get set relative to their storage
+    capacity.  Changing the weight can fix this and maximize cluster capacity.
 
 This example sets the weight of osd.0 which is 600GiB
 

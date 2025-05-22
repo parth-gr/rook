@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-	http://www.apache.org/licenses/LICENSE-2.0
+        http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,18 +21,19 @@ import argparse
 import re
 import subprocess
 import hmac
+import configparser
 from hashlib import sha1 as sha
 from os import linesep as LINESEP
 from os import path
 from email.utils import formatdate
 import requests
 from requests.auth import AuthBase
-
-py3k = False
-if sys.version_info.major >= 3:
-    py3k = True
-    import urllib.parse
-    from ipaddress import ip_address, IPv4Address
+from io import StringIO
+from urllib.parse import urlparse
+from urllib.parse import urlencode as urlencode
+from ipaddress import ip_address
+from ipaddress import IPv4Address
+from base64 import encodebytes as encodestring
 
 ModuleNotFoundError = ImportError
 
@@ -47,27 +48,6 @@ try:
 except ModuleNotFoundError as noModErr:
     print(f"Error: {noModErr}\nExiting the script...")
     sys.exit(1)
-
-try:
-    # for 2.7.x
-    from StringIO import StringIO
-except ModuleNotFoundError:
-    # for 3.x
-    from io import StringIO
-
-try:
-    # for 2.7.x
-    from urlparse import urlparse
-    from urllib import urlencode as urlencode
-except ModuleNotFoundError:
-    # for 3.x
-    from urllib.parse import urlparse
-    from urllib.parse import urlencode as urlencode
-
-try:
-    from base64 import encodestring
-except:
-    from base64 import encodebytes as encodestring
 
 
 class ExecutionFailureException(Exception):
@@ -116,8 +96,8 @@ class DummyRados(object):
             """{"dashboard":"https://ceph-dashboard:8443/","prometheus":"http://ceph-dashboard-db:9283/"}"""
         )
         self.cmd_output_map[
-            """{"caps": ["mon", "allow r, allow command quorum_status", "osd", "profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow x pool=default.rgw.buckets.index"], "entity": "client.healthchecker", "format": "json", "prefix": "auth get-or-create"}"""
-        ] = """[{"entity":"client.healthchecker","key":"AQDFkbNeft5bFRAATndLNUSEKruozxiZi3lrdA==","caps":{"mon":"allow r, allow command quorum_status","osd":"profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow x pool=default.rgw.buckets.index"}}]"""
+            """{"caps": ["mon", "allow r, allow command quorum_status", "osd", "profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow x pool=default.rgw.buckets.index", "mds", "allow *"], "entity": "client.healthchecker", "format": "json", "prefix": "auth get-or-create"}"""
+        ] = """[{"entity":"client.healthchecker","key":"AQDFkbNeft5bFRAATndLNUSEKruozxiZi3lrdA==","caps":{"mon":"allow r, allow command quorum_status","osd":"profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow x pool=default.rgw.buckets.index","mds":"allow *"}}]"""
         self.cmd_output_map[
             """{"caps": ["mon", "profile rbd, allow command 'osd blocklist'", "osd", "profile rbd"], "entity": "client.csi-rbd-node", "format": "json", "prefix": "auth get-or-create"}"""
         ] = """[{"entity":"client.csi-rbd-node","key":"AQBOgrNeHbK1AxAAubYBeV8S1U/GPzq5SVeq6g==","caps":{"mon":"profile rbd, allow command 'osd blocklist'","osd":"profile rbd"}}]"""
@@ -128,20 +108,20 @@ class DummyRados(object):
             """{"caps": ["mon", "allow r, allow command 'osd blocklist'", "mgr", "allow rw", "osd", "allow rw tag cephfs *=*", "mds", "allow rw"], "entity": "client.csi-cephfs-node", "format": "json", "prefix": "auth get-or-create"}"""
         ] = """[{"entity":"client.csi-cephfs-node","key":"AQBOgrNeENunKxAAPCmgE7R6G8DcXnaJ1F32qg==","caps":{"mds":"allow rw","mgr":"allow rw","mon":"allow r, allow command 'osd blocklist'","osd":"allow rw tag cephfs *=*"}}]"""
         self.cmd_output_map[
-            """{"caps": ["mon", "allow r, allow command 'osd blocklist'", "mgr", "allow rw", "osd", "allow rw tag cephfs metadata=*"], "entity": "client.csi-cephfs-provisioner", "format": "json", "prefix": "auth get-or-create"}"""
-        ] = """[{"entity":"client.csi-cephfs-provisioner","key":"AQBOgrNeAFgcGBAAvGqKOAD0D3xxmVY0R912dg==","caps":{"mgr":"allow rw","mon":"allow r, allow command 'osd blocklist'","osd":"allow rw tag cephfs metadata=*"}}]"""
+            """{"caps": ["mon", "allow r, allow command 'osd blocklist'", "mgr", "allow rw", "osd", "allow rw tag cephfs metadata=*", "mds", "allow *"], "entity": "client.csi-cephfs-provisioner", "format": "json", "prefix": "auth get-or-create"}"""
+        ] = """[{"entity":"client.csi-cephfs-provisioner","key":"AQBOgrNeAFgcGBAAvGqKOAD0D3xxmVY0R912dg==","caps":{"mgr":"allow rw","mon":"allow r, allow command 'osd blocklist'","osd":"allow rw tag cephfs metadata=*","mds":"allow *"}}]"""
         self.cmd_output_map[
-            """{"caps": ["mon", "allow r, allow command 'osd blocklist'", "mgr", "allow rw", "osd", "allow rw tag cephfs metadata=*"], "entity": "client.csi-cephfs-provisioner-openshift-storage", "format": "json", "prefix": "auth get-or-create"}"""
-        ] = """[{"entity":"client.csi-cephfs-provisioner-openshift-storage","key":"BQBOgrNeAFgcGBAAvGqKOAD0D3xxmVY0R912dg==","caps":{"mgr":"allow rw","mon":"allow r, allow command 'osd blocklist'","osd":"allow rw tag cephfs metadata=*"}}]"""
+            """{"caps": ["mon", "allow r, allow command 'osd blocklist'", "mgr", "allow rw", "osd", "allow rw tag cephfs metadata=*", "mds", "allow *"], "entity": "client.csi-cephfs-provisioner-openshift-storage", "format": "json", "prefix": "auth get-or-create"}"""
+        ] = """[{"entity":"client.csi-cephfs-provisioner-openshift-storage","key":"BQBOgrNeAFgcGBAAvGqKOAD0D3xxmVY0R912dg==","caps":{"mgr":"allow rw","mon":"allow r, allow command 'osd blocklist'","osd":"allow rw tag cephfs metadata=*", "mds":"allow *"}}]"""
         self.cmd_output_map[
-            """{"caps": ["mon", "allow r, allow command 'osd blocklist'", "mgr", "allow rw", "osd", "allow rw tag cephfs metadata=myfs"], "entity": "client.csi-cephfs-provisioner-openshift-storage-myfs", "format": "json", "prefix": "auth get-or-create"}"""
-        ] = """[{"entity":"client.csi-cephfs-provisioner-openshift-storage-myfs","key":"CQBOgrNeAFgcGBAAvGqKOAD0D3xxmVY0R912dg==","caps":{"mgr":"allow rw","mon":"allow r, allow command 'osd blocklist'","osd":"allow rw tag cephfs metadata=myfs"}}]"""
+            """{"caps": ["mon", "allow r, allow command 'osd blocklist'", "mgr", "allow rw", "osd", "allow rw tag cephfs metadata=myfs", "mds", "allow *"], "entity": "client.csi-cephfs-provisioner-openshift-storage-myfs", "format": "json", "prefix": "auth get-or-create"}"""
+        ] = """[{"entity":"client.csi-cephfs-provisioner-openshift-storage-myfs","key":"CQBOgrNeAFgcGBAAvGqKOAD0D3xxmVY0R912dg==","caps":{"mgr":"allow rw","mon":"allow r, allow command 'osd blocklist'","osd":"allow rw tag cephfs metadata=myfs","mds":"allow *"}}]"""
         self.cmd_output_map[
-            """{"caps": ["mon", "allow r, allow command quorum_status, allow command version", "mgr", "allow command config", "osd", "profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow rx pool=default.rgw.log, allow x pool=default.rgw.buckets.index"], "entity": "client.healthchecker", "format": "json", "prefix": "auth get-or-create"}"""
-        ] = """[{"entity":"client.healthchecker","key":"AQDFkbNeft5bFRAATndLNUSEKruozxiZi3lrdA==","caps":{"mon": "allow r, allow command quorum_status, allow command version", "mgr": "allow command config", "osd": "profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow rx pool=default.rgw.log, allow x pool=default.rgw.buckets.index"}}]"""
+            """{"caps": ["mon", "allow r, allow command quorum_status, allow command version", "mgr", "allow command config", "osd", "profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow rx pool=default.rgw.log, allow x pool=default.rgw.buckets.index", "mds", "allow *"], "entity": "client.healthchecker", "format": "json", "prefix": "auth get-or-create"}"""
+        ] = """[{"entity":"client.healthchecker","key":"AQDFkbNeft5bFRAATndLNUSEKruozxiZi3lrdA==","caps":{"mon": "allow r, allow command quorum_status, allow command version", "mgr": "allow command config", "osd": "profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow rx pool=default.rgw.log, allow x pool=default.rgw.buckets.index","mds":"allow *"}}]"""
         self.cmd_output_map[
-            """{"caps": ["mon", "allow r, allow command quorum_status, allow command version", "mgr", "allow command config", "osd", "profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow rx pool=default.rgw.log, allow x pool=default.rgw.buckets.index"], "entity": "client.healthchecker", "format": "json", "prefix": "auth caps"}"""
-        ] = """[{"entity":"client.healthchecker","key":"AQDFkbNeft5bFRAATndLNUSRKruozxiZi3lrdA==","caps":{"mon": "allow r, allow command quorum_status, allow command version", "mgr": "allow command config", "osd": "profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow rx pool=default.rgw.log, allow x pool=default.rgw.buckets.index"}}]"""
+            """{"caps": ["mon", "allow r, allow command quorum_status, allow command version", "mgr", "allow command config", "osd", "profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow rx pool=default.rgw.log, allow x pool=default.rgw.buckets.index", "mds", "allow *"], "entity": "client.healthchecker", "format": "json", "prefix": "auth caps"}"""
+        ] = """[{"entity":"client.healthchecker","key":"AQDFkbNeft5bFRAATndLNUSRKruozxiZi3lrdA==","caps":{"mon": "allow r, allow command quorum_status, allow command version", "mgr": "allow command config", "osd": "profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow rx pool=default.rgw.log, allow x pool=default.rgw.buckets.index","mds":"allow *"}}]"""
         self.cmd_output_map["""{"format": "json", "prefix": "mgr services"}"""] = (
             """{"dashboard": "http://rook-ceph-mgr-a-57cf9f84bc-f4jnl:7000/", "prometheus": "http://rook-ceph-mgr-a-57cf9f84bc-f4jnl:9283/"}"""
         )
@@ -150,7 +130,7 @@ class DummyRados(object):
         ] = """{"dashboard": "http://rook-ceph-mgr-a-57cf9f84bc-f4jnl:7000/", "prometheus": "http://rook-ceph-mgr-a-57cf9f84bc-f4jnl:9283/"}"""
         self.cmd_output_map[
             """{"entity": "client.healthchecker", "format": "json", "prefix": "auth get"}"""
-        ] = """[{"entity":"client.healthchecker","key":"AQDFkbNeft5bFRAATndLNUSEKruozxiZi3lrdA==","caps":{"mon": "allow r, allow command quorum_status, allow command version", "mgr": "allow command config", "osd": "profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow rx pool=default.rgw.log, allow x pool=default.rgw.buckets.index"}}]"""
+        ] = """[{"entity":"client.healthchecker","key":"AQDFkbNeft5bFRAATndLNUSEKruozxiZi3lrdA==","caps":{"mon": "allow r, allow command quorum_status, allow command version", "mgr": "allow command config", "osd": "profile rbd-read-only, allow rwx pool=default.rgw.meta, allow r pool=.rgw.root, allow rw pool=default.rgw.control, allow rx pool=default.rgw.log, allow x pool=default.rgw.buckets.index","mds":"allow *"}}]"""
         self.cmd_output_map[
             """{"entity": "client.csi-cephfs-node", "format": "json", "prefix": "auth get"}"""
         ] = """[]"""
@@ -171,10 +151,10 @@ class DummyRados(object):
         ] = """[]"""
         self.cmd_output_map[
             """{"entity": "client.csi-cephfs-provisioner", "format": "json", "prefix": "auth get"}"""
-        ] = """[{"entity":"client.csi-cephfs-provisioner","key":"AQDFkbNeft5bFRAATndLNUSEKruozxiZi3lrdA==","caps":{"mon":"allow r", "mgr":"allow rw", "osd":"allow rw tag cephfs metadata=*"}}]"""
+        ] = """[{"entity":"client.csi-cephfs-provisioner","key":"AQDFkbNeft5bFRAATndLNUSEKruozxiZi3lrdA==","caps":{"mon":"allow r", "mgr":"allow rw", "osd":"allow rw tag cephfs metadata=*","mds":"allow *"}}]"""
         self.cmd_output_map[
-            """{"caps": ["mon", "allow r, allow command 'osd blocklist'", "mgr", "allow rw", "osd", "allow rw tag cephfs metadata=*"], "entity": "client.csi-cephfs-provisioner", "format": "json", "prefix": "auth caps"}"""
-        ] = """[{"entity":"client.csi-cephfs-provisioner","key":"AQDFkbNeft5bFRAATndLNUSEKruozxiZi3lrdA==","caps":{"mon":"allow r,  allow command 'osd blocklist'", "mgr":"allow rw", "osd":"allow rw tag cephfs metadata=*"}}]"""
+            """{"caps": ["mon", "allow r, allow command 'osd blocklist'", "mgr", "allow rw", "osd", "allow rw tag cephfs metadata=*", "mds", "allow *"], "entity": "client.csi-cephfs-provisioner", "format": "json", "prefix": "auth caps"}"""
+        ] = """[{"entity":"client.csi-cephfs-provisioner","key":"AQDFkbNeft5bFRAATndLNUSEKruozxiZi3lrdA==","caps":{"mon":"allow r,  allow command 'osd blocklist'", "mgr":"allow rw", "osd":"allow rw tag cephfs metadata=*","mds":"allow *"}}]"""
         self.cmd_output_map['{"format": "json", "prefix": "status"}'] = ceph_status_str
 
     def shutdown(self):
@@ -233,19 +213,14 @@ class S3Auth(AuthBase):
         if "date" not in r.headers and "x-amz-date" not in r.headers:
             r.headers["date"] = formatdate(timeval=None, localtime=False, usegmt=True)
         signature = self.get_signature(r)
-        if py3k:
-            signature = signature.decode("utf-8")
+        signature = signature.decode("utf-8")
         r.headers["Authorization"] = f"AWS {self.access_key}:{signature}"
         return r
 
     def get_signature(self, r):
         canonical_string = self.get_canonical_string(r.url, r.headers, r.method)
-        if py3k:
-            key = self.secret_key.encode("utf-8")
-            msg = canonical_string.encode("utf-8")
-        else:
-            key = self.secret_key
-            msg = canonical_string
+        key = self.secret_key.encode("utf-8")
+        msg = canonical_string.encode("utf-8")
         h = hmac.new(key, msg, digestmod=sha)
         return encodestring(h.digest()).strip()
 
@@ -271,12 +246,8 @@ class S3Auth(AuthBase):
                 interesting_headers[lk] = headers[key].strip()
 
         # If x-amz-date is used it supersedes the date header.
-        if not py3k:
-            if "x-amz-date" in interesting_headers:
-                interesting_headers["date"] = ""
-        else:
-            if "x-amz-date" in interesting_headers:
-                interesting_headers["date"] = ""
+        if "x-amz-date" in interesting_headers:
+            interesting_headers["date"] = ""
 
         buf = f"{method}\n"
         for key in sorted(interesting_headers.keys()):
@@ -310,10 +281,10 @@ class RadosJSON:
         common_group = argP.add_argument_group("common")
         common_group.add_argument("--verbose", "-v", action="store_true", default=False)
         common_group.add_argument(
-            "--ceph-conf", "-c", help="Provide a ceph conf file.", type=str
+            "--ceph-conf", "-c", help="Provide a ceph conf file.", type=str, default=""
         )
         common_group.add_argument(
-            "--keyring", "-k", help="Path to ceph keyring file.", type=str
+            "--keyring", "-k", help="Path to ceph keyring file.", type=str, default=""
         )
         common_group.add_argument(
             "--run-as-user",
@@ -406,7 +377,7 @@ class RadosJSON:
             "--rgw-tls-cert-path",
             default="",
             required=False,
-            help="RADOS Gateway endpoint TLS certificate",
+            help="RADOS Gateway endpoint TLS certificate (or intermediate signing certificate)",
         )
         output_group.add_argument(
             "--rgw-skip-tls",
@@ -508,6 +479,16 @@ class RadosJSON:
             + "Upgrade flag should only be used to append new permissions to users, it shouldn't be used for changing user already applied permission, for example you shouldn't change in which pool user has access",
         )
 
+        # Add command-line arguments
+        config_group = argP.add_argument_group("config")
+        config_group.add_argument(
+            "--config-file",
+            type=str,
+            help="Path to the configuration file, Priority: command-line-args > config.ini file values > default values",
+            required=False,
+            default="",
+        )
+
         if args_to_parse:
             assert (
                 type(args_to_parse) == list
@@ -571,12 +552,6 @@ class RadosJSON:
             with open(self._arg_parser.rgw_tls_cert_path, encoding="utf8") as f:
                 contents = f.read()
                 return contents.rstrip()
-
-    def _check_conflicting_options(self):
-        if not self._arg_parser.upgrade and not self._arg_parser.rbd_data_pool_name:
-            raise ExecutionFailureException(
-                "Either '--upgrade' or '--rbd-data-pool-name <pool_name>' should be specified"
-            )
 
     def _invalid_endpoint(self, endpoint_str):
         # extract the port by getting the last split on `:` delimiter
@@ -647,11 +622,29 @@ class RadosJSON:
             ("-1"),
         )
 
+    def parse_config_file(self, config_file):
+        config = configparser.ConfigParser()
+        config.read(config_file)
+        for arg in list(vars(self._arg_parser)):
+            # python treats flag-name as flag_name internally, so converting back to flag-name,
+            # so we can get those values from config file
+            argument = arg.replace("_", "-")
+            argumentValue = str(getattr(self._arg_parser, arg))
+            config_value = config.get("Configurations", argument, fallback=None)
+            # give priority to command line argument, if command line argument is not present use config.ini value,
+            if (str(sys.argv).find(argument) == -1) and (
+                (config_value != None) and (config_value != "")
+            ):
+                self._arg_parser.__setattr__(arg, config_value)
+
+        return config
+
     def __init__(self, arg_list=None):
         self.out_map = {}
         self._excluded_keys = set()
         self._arg_parser = self.gen_arg_parser(args_to_parse=arg_list)
-        self._check_conflicting_options()
+        if self._arg_parser.config_file:
+            self.config = self.parse_config_file(self._arg_parser.config_file)
         self.run_as_user = self._arg_parser.run_as_user
         self.output_file = self._arg_parser.output
         self.ceph_conf = self._arg_parser.ceph_conf
@@ -755,6 +748,7 @@ class RadosJSON:
             host_ip_type = self._invalid_endpoint(host_addr + ":80")
             import socket
 
+            ip = []
             # example output [(<AddressFamily.AF_INET: 2>, <SocketKind.SOCK_STREAM: 1>, 6, '', ('93.184.216.34', 80)), ...]
             # we need to get 93.184.216.34 so it would be ip[0][4][0]
             if host_ip_type == "IPv6":
@@ -867,6 +861,7 @@ class RadosJSON:
             "mon": "allow r, allow command 'osd blocklist'",
             "mgr": "allow rw",
             "osd": "allow rw tag cephfs metadata=*",
+            "mds": "allow *",
         }
         if self._arg_parser.restricted_auth_permission:
             k8s_cluster_name = self._arg_parser.k8s_cluster_name
@@ -1016,6 +1011,7 @@ class RadosJSON:
             "mon": "allow r, allow command quorum_status, allow command version",
             "mgr": "allow command config",
             "osd": f"profile rbd-read-only, allow rwx pool={self._arg_parser.rgw_pool_prefix}.rgw.meta, allow r pool=.rgw.root, allow rw pool={self._arg_parser.rgw_pool_prefix}.rgw.control, allow rx pool={self._arg_parser.rgw_pool_prefix}.rgw.log, allow x pool={self._arg_parser.rgw_pool_prefix}.rgw.buckets.index",
+            "mds": "allow *",
         }
 
         return caps, entity
@@ -1285,16 +1281,6 @@ class RadosJSON:
                 sys.stderr.write(err_msg)
                 return None, None, False, "-1"
 
-        # if it is python2, don't check for ceph version for adding `info=read` cap(rgw_validation)
-        if sys.version_info.major < 3:
-            jsonoutput = json.loads(output)
-            return (
-                jsonoutput["keys"][0]["access_key"],
-                jsonoutput["keys"][0]["secret_key"],
-                False,
-                "",
-            )
-
         # separately add info=read caps for rgw-endpoint ip validation
         info_cap_supported = True
         cmd = [
@@ -1353,6 +1339,8 @@ class RadosJSON:
 
     def validate_rados_namespace(self):
         rbd_pool_name = self._arg_parser.rbd_data_pool_name
+        if self._arg_parser.rbd_metadata_ec_pool_name:
+            rbd_pool_name = self._arg_parser.rbd_metadata_ec_pool_name
         rados_namespace = self._arg_parser.rados_namespace
         if rados_namespace == "":
             return
@@ -1438,7 +1426,7 @@ class RadosJSON:
         r1 = r.json()
         if r1 is None or r1.get("info") is None:
             sys.stderr.write(
-                f"The provided rgw Endpoint, '{self._arg_parser.rgw_endpoint}', is invalid."
+                f"The provided rgw endpoint, '{self._arg_parser.rgw_endpoint}', is invalid with http status code: {r.status_code}"
             )
             return (
                 "",
@@ -1565,6 +1553,25 @@ class RadosJSON:
         for pool in topology_rbd_pools:
             self.init_rbd_pool(pool)
 
+    # this will return the final args that script uses to process
+    # the priority to set a particular value is,
+    # command-line-args > config.ini file values > default values
+    def getFinalUsedArgs(self):
+        argument = f"[Configurations]\n"
+        for arg in vars(self._arg_parser):
+            if str(getattr(self._arg_parser, arg)):
+                # python treats flag-name as flag_name internally, so converting back to flag-name,
+                # so we can get those values from config file
+                argValue = arg.replace("_", "-")
+                # do not add the config-file flag and also not add the boolean flags which are set to False
+                # because config.ini file treats boolean flags as True always
+                if (
+                    argValue != "config-file"
+                    and getattr(self._arg_parser, arg) != False
+                ):
+                    argument += f"{argValue} = {str(getattr(self._arg_parser, arg))}\n"
+        return argument
+
     def _gen_output_map(self):
         if self.out_map:
             return
@@ -1579,6 +1586,8 @@ class RadosJSON:
         self.validate_rados_namespace()
         self._excluded_keys.add("K8S_CLUSTER_NAME")
         self.get_cephfs_data_pool_details()
+        # double string needed for upstream exports of flags
+        self.out_map["ARGS"] = f'"{self.getFinalUsedArgs()}"'
         self.out_map["NAMESPACE"] = self._arg_parser.namespace
         self.out_map["K8S_CLUSTER_NAME"] = self._arg_parser.k8s_cluster_name
         self.out_map["ROOK_EXTERNAL_FSID"] = self.get_fsid()
@@ -1740,6 +1749,13 @@ class RadosJSON:
             return ""
         json_out = [
             {
+                "name": "external-cluster-user-command",
+                "kind": "ConfigMap",
+                "data": {
+                    "args": self.out_map["ARGS"],
+                },
+            },
+            {
                 "name": "rook-ceph-mon-endpoints",
                 "kind": "ConfigMap",
                 "data": {
@@ -1873,7 +1889,7 @@ class RadosJSON:
             )
             json_out.append(
                 {
-                    "name": "ceph-rbd-rados-namespace",
+                    "name": f"ceph-rbd-rados-namespace-{self.out_map['RADOS_NAMESPACE']}",
                     "kind": "StorageClass",
                     "data": {
                         "pool": self.out_map["RBD_POOL_NAME"],

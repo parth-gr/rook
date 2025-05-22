@@ -9,6 +9,9 @@ metadata:
     {{- include "library.rook-ceph.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.scaleDownOperator | ternary 0 1 }}
+{{- if .Values.revisionHistoryLimit }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+{{- end }}
   selector:
     matchLabels:
       app: rook-ceph-operator
@@ -19,6 +22,9 @@ spec:
       labels:
         app: rook-ceph-operator
         helm.sh/chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+{{- if .Values.operatorPodLabels }}
+{{ toYaml .Values.operatorPodLabels | indent 8 }}
+{{- end }}
 {{- if .Values.annotations }}
       annotations:
 {{ toYaml .Values.annotations | indent 8 }}
@@ -86,6 +92,10 @@ spec:
         - name: ROOK_HOSTPATH_REQUIRES_PRIVILEGED
           value: "{{ .Values.hostpathRequiresPrivileged }}"
 {{- end }}
+{{- if .Values.customHostnameLabel }}
+        - name: ROOK_CUSTOM_HOSTNAME_LABEL
+          value: {{ .Values.customHostnameLabel }}
+{{- end }}
         - name: ROOK_DISABLE_DEVICE_HOTPLUG
           value: "{{ .Values.disableDeviceHotplug }}"
         - name: ROOK_DISCOVER_DEVICES_INTERVAL
@@ -108,6 +118,7 @@ spec:
 {{- end }}
 {{- if .Values.useOperatorHostNetwork }}
       hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
 {{- end }}
 {{- if .Values.nodeSelector }}
       nodeSelector:

@@ -3,11 +3,11 @@ title: Development Flow
 ---
 
 Thank you for your time and effort to help us improve Rook! Here are a few steps to get started. If you have any questions,
-don't hesitate to reach out to us on our [Slack](https://Rook-io.slack.com) dev channel.
+don't hesitate to reach out to us on our [Slack](https://Rook-io.slack.com) dev channel. Sign up for the Rook Slack [here](https://slack.rook.io).
 
 ## Prerequisites
 
-1. [GO 1.21](https://golang.org/dl/) or greater installed
+1. [GO 1.22](https://golang.org/dl/) or greater installed
 2. Git client installed
 3. GitHub account
 
@@ -91,11 +91,11 @@ The overall source code layout is summarized:
 ```text
 rook
 ├── build                         # build makefiles and logic to build, publish and release all Rook artifacts
-├── cluster
+├── deploy
 │   ├── charts                    # Helm charts
 │   │   └── rook-ceph
 │   │   └── rook-ceph-cluster
-│   └── examples                  # Sample manifestes to configure the cluster
+│   └── examples                  # Sample manifests to configure the cluster
 │
 ├── cmd
 │   ├── rook                      # Main command entry points for operators and daemons
@@ -112,11 +112,14 @@ rook
 │   ├── clusterd
 │   ├── daemon                    # daemons for configuring ceph
 │   │   ├── ceph
-│   │   └── discover
+│   │   ├── discover
+│   │   ├── multus
+│   │   └── util
 │   ├── operator                  # all reconcile logic and custom controllers
 │   │   ├── ceph
 │   │   ├── discover
 │   │   ├── k8sutil
+│   │   └── test
 │   ├── util
 │   └── version
 └── tests
@@ -204,6 +207,11 @@ All pull requests must pass all continuous integration (CI) tests before they ca
 automatically run against every pull request. The results of these tests along with code review feedback determine whether
 your request will be merged.
 
+For developers who would like to locally test their changes
+as much as possible before pushing
+(a behavior that is not required but highly encouraged),
+the unit tests and various linters can easily be run locally.
+
 ## Unit Tests
 
 From the root of your local Rook repo execute the following to run all of the unit tests:
@@ -240,6 +248,21 @@ Common cases that may need tests:
 * an input is specified incorrectly, for each input
 * a resource the code relies on doesn't exist, for each dependency
 
+## Linting
+
+Run `make lint` to run all linters. This will require the following CLI tools to be installed on the system:
+
+* [yamllint](https://www.yamllint.com/)
+* [shellcheck](https://www.shellcheck.net/)
+* [pylint](https://www.pylint.org/)
+* [markdownlint-cli2](https://github.com/DavidAnson/markdownlint-cli2)
+
+Many of those tools are available via `brew` for MacOS or as Linux distribution packages.
+Otherwise refer to the respective project websites for installation instructions.
+
+!!! tip
+    Run `make help` to see a list of all possible make targets
+
 ## Integration Tests
 
 Rook's upstream continuous integration (CI) tests will run integration tests against your changes
@@ -256,7 +279,7 @@ See the action details for an ssh connection to the Github runner.
 
 ## Commit structure
 
-Rook maintainers value clear, lengthy and explanatory commit messages.
+Rook maintainers value clear and detailed commit messages.
 
 Requirements for commits:
 
@@ -326,23 +349,23 @@ Make modifications directly in the manager module and reload:
 
 2. Shell into the manager container:
 
-```console
-kubectl exec -n rook-ceph --stdin --tty $(kubectl get pod -n rook-ceph -l ceph_daemon_type=mgr,instance=a  -o jsonpath='{.items[0].metadata.name}') -c mgr  -- /bin/bash
-```
+    ```console
+    kubectl exec -n rook-ceph --stdin --tty $(kubectl get pod -n rook-ceph -l ceph_daemon_type=mgr,instance=a  -o jsonpath='{.items[0].metadata.name}') -c mgr  -- /bin/bash
+    ```
 
 3. Make the modifications needed in the required manager module. The manager module source code is found in `/usr/share/ceph/mgr/`.
 
-!!! Note
-    If the manager pod is restarted, all modifications made in the mgr container will be lost
+    !!! Note
+        If the manager pod is restarted, all modifications made in the mgr container will be lost
 
-1. Restart the modified manager module to test the modifications:
+4. Restart the modified manager module to test the modifications:
 
-Example for restarting the rook manager module with the [kubectl plugin](https://github.com/rook/kubectl-rook-ceph):
+    Example for restarting the rook manager module with the [kubectl plugin](https://github.com/rook/kubectl-rook-ceph):
 
-```console
-kubectl rook-ceph ceph mgr module disable rook
-kubectl rook-ceph ceph mgr module enable rook
-```
+    ```console
+    kubectl rook-ceph ceph mgr module disable rook
+    kubectl rook-ceph ceph mgr module enable rook
+    ```
 
-Once the module is restarted the modifications will be running in the active manager.
-View the manager pod log or other changed behavior to validate the changes.
+5. Once the module is restarted the modifications will be running in the active manager.
+    View the manager pod log or other changed behavior to validate the changes.

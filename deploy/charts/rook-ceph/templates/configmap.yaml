@@ -9,14 +9,27 @@ data:
   ROOK_LOG_LEVEL: {{ .Values.logLevel | quote }}
   ROOK_CEPH_COMMANDS_TIMEOUT_SECONDS: {{ .Values.cephCommandsTimeoutSeconds | quote }}
   ROOK_OBC_WATCH_OPERATOR_NAMESPACE: {{ .Values.enableOBCWatchOperatorNamespace | quote }}
+{{- if .Values.operatorMetricsBindAddress }}
+  ROOK_OPERATOR_METRICS_BIND_ADDRESS: {{ .Values.operatorMetricsBindAddress | quote }}
+{{- end }}
 {{- if .Values.obcProvisionerNamePrefix }}
   ROOK_OBC_PROVISIONER_NAME_PREFIX: {{ .Values.obcProvisionerNamePrefix | quote }}
+{{- end }}
+{{- if .Values.obcAllowAdditionalConfigFields }}
+  ROOK_OBC_ALLOW_ADDITIONAL_CONFIG_FIELDS: {{ .Values.obcAllowAdditionalConfigFields | quote }}
 {{- end }}
   ROOK_CEPH_ALLOW_LOOP_DEVICES: {{ .Values.allowLoopDevices | quote }}
   ROOK_ENABLE_DISCOVERY_DAEMON: {{ .Values.enableDiscoveryDaemon | quote }}
 {{- if .Values.discoverDaemonUdev }}
   DISCOVER_DAEMON_UDEV_BLACKLIST: {{ .Values.discoverDaemonUdev | quote }}
 {{- end }}
+{{- if .Values.revisionHistoryLimit }}
+  ROOK_REVISION_HISTORY_LIMIT: {{ .Values.revisionHistoryLimit | quote }}
+{{- end }}
+{{- if .Values.enforceHostNetwork }}
+  ROOK_ENFORCE_HOST_NETWORK: {{ .Values.enforceHostNetwork | quote }}
+{{- end }}
+
 {{- if .Values.csi }}
   ROOK_CSI_ENABLE_RBD: {{ .Values.csi.enableRbdDriver | quote }}
   ROOK_CSI_ENABLE_CEPHFS: {{ .Values.csi.enableCephfsDriver | quote }}
@@ -28,7 +41,6 @@ data:
   CSI_ENABLE_ENCRYPTION: {{ .Values.csi.enableCSIEncryption | quote }}
   CSI_ENABLE_OMAP_GENERATOR: {{ .Values.csi.enableOMAPGenerator | quote }}
   CSI_ENABLE_HOST_NETWORK: {{ .Values.csi.enableCSIHostNetwork | quote }}
-  CSI_DISABLE_HOLDER_PODS: {{ .Values.csi.disableHolderPods | quote }}
   CSI_ENABLE_METADATA: {{ .Values.csi.enableMetadata | quote }}
   CSI_ENABLE_VOLUME_GROUP_SNAPSHOT: {{ .Values.csi.enableVolumeGroupSnapshot | quote }}
 {{- if .Values.csi.csiDriverNamePrefix }}
@@ -80,33 +92,33 @@ data:
   CSI_LEADER_ELECTION_RETRY_PERIOD: {{ .Values.csi.csiLeaderElectionRetryPeriod | quote }}
 {{- end }}
 {{- if .Values.csi.cephcsi }}
-{{- if .Values.csi.cephcsi.image }}
-  ROOK_CSI_CEPH_IMAGE: {{ .Values.csi.cephcsi.image | quote }}
+{{- if and .Values.csi.cephcsi.repository .Values.csi.cephcsi.tag }}
+  ROOK_CSI_CEPH_IMAGE: "{{ .Values.csi.cephcsi.repository }}:{{ .Values.csi.cephcsi.tag }}"
 {{- end }}
 {{- end }}
 {{- if .Values.csi.registrar }}
-{{- if .Values.csi.registrar.image }}
-  ROOK_CSI_REGISTRAR_IMAGE: {{ .Values.csi.registrar.image | quote }}
+{{- if and .Values.csi.registrar.repository .Values.csi.registrar.tag }}
+  ROOK_CSI_REGISTRAR_IMAGE: "{{ .Values.csi.registrar.repository }}:{{ .Values.csi.registrar.tag }}"
 {{- end }}
 {{- end }}
 {{- if .Values.csi.provisioner }}
-{{- if .Values.csi.provisioner.image }}
-  ROOK_CSI_PROVISIONER_IMAGE: {{ .Values.csi.provisioner.image | quote }}
+{{- if and .Values.csi.provisioner.repository .Values.csi.provisioner.tag }}
+  ROOK_CSI_PROVISIONER_IMAGE: "{{ .Values.csi.provisioner.repository }}:{{ .Values.csi.provisioner.tag }}"
 {{- end }}
 {{- end }}
 {{- if .Values.csi.snapshotter }}
-{{- if .Values.csi.snapshotter.image }}
-  ROOK_CSI_SNAPSHOTTER_IMAGE: {{ .Values.csi.snapshotter.image | quote }}
+{{- if and .Values.csi.snapshotter.repository .Values.csi.snapshotter.tag }}
+  ROOK_CSI_SNAPSHOTTER_IMAGE: "{{ .Values.csi.snapshotter.repository }}:{{ .Values.csi.snapshotter.tag }}"
 {{- end }}
 {{- end }}
 {{- if .Values.csi.attacher }}
-{{- if .Values.csi.attacher.image }}
-  ROOK_CSI_ATTACHER_IMAGE: {{ .Values.csi.attacher.image | quote }}
+{{- if and .Values.csi.attacher.repository .Values.csi.attacher.tag }}
+  ROOK_CSI_ATTACHER_IMAGE: "{{ .Values.csi.attacher.repository }}:{{ .Values.csi.attacher.tag }}"
 {{- end }}
 {{- end }}
 {{- if .Values.csi.resizer }}
-{{- if .Values.csi.resizer.image }}
-  ROOK_CSI_RESIZER_IMAGE: {{ .Values.csi.resizer.image | quote }}
+{{- if and .Values.csi.resizer.repository .Values.csi.resizer.tag }}
+  ROOK_CSI_RESIZER_IMAGE: "{{ .Values.csi.resizer.repository }}:{{ .Values.csi.resizer.tag }}"
 {{- end }}
 {{- end }}
 {{- if .Values.csi.imagePullPolicy }}
@@ -114,8 +126,8 @@ data:
 {{- end }}
 {{- if .Values.csi.csiAddons }}
   CSI_ENABLE_CSIADDONS: {{ .Values.csi.csiAddons.enabled | quote }}
-{{- if .Values.csi.csiAddons.image }}
-  ROOK_CSIADDONS_IMAGE: {{ .Values.csi.csiAddons.image | quote }}
+{{- if and .Values.csi.csiAddons.repository .Values.csi.csiAddons.tag }}
+  ROOK_CSIADDONS_IMAGE: "{{ .Values.csi.csiAddons.repository }}:{{ .Values.csi.csiAddons.tag }}"
 {{- end }}
 {{- end }}
 {{- if .Values.csi.topology }}
@@ -160,9 +172,6 @@ data:
 {{- if .Values.csi.nfsProvisionerNodeAffinity }}
   CSI_NFS_PROVISIONER_NODE_AFFINITY: {{ .Values.csi.nfsProvisionerNodeAffinity }}
 {{- end }}
-{{- if .Values.csi.allowUnsupportedVersion }}
-  ROOK_CSI_ALLOW_UNSUPPORTED_VERSION: {{ .Values.csi.allowUnsupportedVersion | quote }}
-{{- end }}
 {{- if .Values.csi.pluginTolerations }}
   CSI_PLUGIN_TOLERATIONS: {{ toYaml .Values.csi.pluginTolerations | quote }}
 {{- end }}
@@ -198,6 +207,12 @@ data:
 {{- end }}
 {{- if .Values.csi.csiAddonsPort }}
   CSIADDONS_PORT: {{ .Values.csi.csiAddonsPort | quote }}
+{{- end }}
+{{- if .Values.csi.csiAddonsRBDProvisionerPort }}
+  CSIADDONS_RBD_PROVISIONER_PORT: {{ .Values.csi.csiAddonsRBDProvisionerPort | quote }}
+{{- end }}
+{{- if .Values.csi.csiAddonsCephFSProvisionerPort }}
+  CSIADDONS_CEPHFS_PROVISIONER_PORT: {{ .Values.csi.csiAddonsCephFSProvisionerPort | quote }}
 {{- end }}
 {{- if .Values.csi.forceCephFSKernelClient }}
   CSI_FORCE_CEPHFS_KERNEL_CLIENT: {{ .Values.csi.forceCephFSKernelClient | quote }}
@@ -250,4 +265,10 @@ data:
   CSI_CEPHFS_ATTACH_REQUIRED: {{ .Values.csi.cephFSAttachRequired | quote }}
   CSI_RBD_ATTACH_REQUIRED: {{ .Values.csi.rbdAttachRequired | quote }}
   CSI_NFS_ATTACH_REQUIRED: {{ .Values.csi.nfsAttachRequired | quote }}
+{{- end }}
+{{- if .Values.csi.kubeApiBurst }}
+  CSI_KUBE_API_BURST: {{ .Values.csi.kubeApiBurst | quote }}
+{{- end }}
+{{- if .Values.csi.kubeApiQPS }}
+  CSI_KUBE_API_QPS: {{ .Values.csi.kubeApiQPS | quote }}
 {{- end }}

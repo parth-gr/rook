@@ -44,18 +44,22 @@ var osdCmd = &cobra.Command{
 	Use:   "osd",
 	Short: "Provisions and runs the osd daemon",
 }
+
 var osdConfigCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Updates ceph.conf for the osd",
 }
+
 var provisionCmd = &cobra.Command{
 	Use:   "provision",
 	Short: "Generates osd config and prepares an osd for runtime",
 }
+
 var osdStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Starts the osd daemon", // OSDs that were provisioned by ceph-volume
 }
+
 var osdRemoveCmd = &cobra.Command{
 	Use:   "remove",
 	Short: "Removes a set of OSDs from the cluster",
@@ -199,7 +203,6 @@ func writeOSDConfig(cmd *cobra.Command, args []string) error {
 
 // Provision a device or directory for an OSD
 func prepareOSD(cmd *cobra.Command, args []string) error {
-
 	if err := verifyConfigFlags(provisionCmd); err != nil {
 		return err
 	}
@@ -261,10 +264,10 @@ func prepareOSD(cmd *cobra.Command, args []string) error {
 	}
 
 	// destroy the OSD using the OSD ID
-	var replaceOSD *oposd.OSDReplaceInfo
+	var replaceOSD *oposd.OSDInfo
 	if replaceOSDID != -1 {
 		logger.Infof("destroying osd.%d and cleaning its backing device", replaceOSDID)
-		replaceOSD, err = osddaemon.DestroyOSD(context, &clusterInfo, replaceOSDID, cfg.pvcBacked, cfg.storeConfig.EncryptedDevice)
+		replaceOSD, err = osddaemon.DestroyOSD(context, &clusterInfo, replaceOSDID, cfg.pvcBacked)
 		if err != nil {
 			rook.TerminateFatal(errors.Wrapf(err, "failed to destroy OSD %d.", replaceOSDID))
 		}
@@ -344,7 +347,7 @@ func commonOSDInit(cmd *cobra.Command) {
 	rook.SetLogLevel()
 	rook.LogStartupInfo(cmd.Flags())
 
-	clusterInfo.Monitors = opcontroller.ParseMonEndpoints(cfg.monEndpoints)
+	clusterInfo.InternalMonitors = opcontroller.ParseMonEndpoints(cfg.monEndpoints)
 }
 
 // use zone/region/hostname labels in the crushmap

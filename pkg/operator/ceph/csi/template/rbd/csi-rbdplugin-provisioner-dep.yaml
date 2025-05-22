@@ -17,6 +17,7 @@ spec:
         {{ $key }}: "{{ $value }}"
         {{ end }}
     spec:
+      securityContext: {}
       serviceAccountName: rook-csi-rbd-provisioner-sa
       {{ if .ProvisionerPriorityClassName }}
       priorityClassName: {{ .ProvisionerPriorityClassName }}
@@ -38,9 +39,13 @@ spec:
             - "--extra-create-metadata=true"
             - "--prevent-volume-mode-conversion=true"
             - "--feature-gates=HonorPVReclaimPolicy=true"
-            {{- if .EnableCSITopology }}
-            - "--feature-gates=Topology=true"
-            {{- end }}
+            - "--feature-gates=Topology={{ .EnableCSITopology }}"
+            {{ if .KubeApiBurst }}
+            - "--kube-api-burst={{ .KubeApiBurst }}"
+            {{ end }}
+            {{ if .KubeApiQPS }}
+            - "--kube-api-qps={{ .KubeApiQPS }}"
+            {{ end }}
           env:
             - name: ADDRESS
               value: unix:///csi/csi-provisioner.sock
@@ -61,6 +66,12 @@ spec:
             - "--leader-election-retry-period={{ .LeaderElectionRetryPeriod }}"
             - "--handle-volume-inuse-error=false"
             - "--feature-gates=RecoverVolumeExpansionFailure=true"
+            {{ if .KubeApiBurst }}
+            - "--kube-api-burst={{ .KubeApiBurst }}"
+            {{ end }}
+            {{ if .KubeApiQPS }}
+            - "--kube-api-qps={{ .KubeApiQPS }}"
+            {{ end }}
           env:
             - name: ADDRESS
               value: unix:///csi/csi-provisioner.sock
@@ -81,6 +92,12 @@ spec:
             - "--leader-election-renew-deadline={{ .LeaderElectionRenewDeadline }}"
             - "--leader-election-retry-period={{ .LeaderElectionRetryPeriod }}"
             - "--default-fstype=ext4"
+            {{ if .KubeApiBurst }}
+            - "--kube-api-burst={{ .KubeApiBurst }}"
+            {{ end }}
+            {{ if .KubeApiQPS }}
+            - "--kube-api-qps={{ .KubeApiQPS }}"
+            {{ end }}
           env:
             - name: ADDRESS
               value: /csi/csi-provisioner.sock
@@ -103,7 +120,13 @@ spec:
             - "--leader-election-retry-period={{ .LeaderElectionRetryPeriod }}"
             - "--extra-create-metadata=true"
             {{ if .VolumeGroupSnapshotSupported }}
-            - "--enable-volume-group-snapshots={{ .EnableVolumeGroupSnapshot }}"
+            - "{{ .VolumeGroupSnapshotCLIFlag }}"
+            {{ end }}
+            {{ if .KubeApiBurst }}
+            - "--kube-api-burst={{ .KubeApiBurst }}"
+            {{ end }}
+            {{ if .KubeApiQPS }}
+            - "--kube-api-qps={{ .KubeApiQPS }}"
             {{ end }}
           env:
             - name: ADDRESS
@@ -116,7 +139,7 @@ spec:
         {{ if .EnableOMAPGenerator }}
         - name: csi-omap-generator
           image: {{ .CSIPluginImage }}
-          args :
+          args:
             - "--type=controller"
             - "--drivernamespace=$(DRIVER_NAMESPACE)"
             - "--v={{ .LogLevel }}"
@@ -142,11 +165,11 @@ spec:
         {{ if .EnableCSIAddonsSideCar }}
         - name: csi-addons
           image: {{ .CSIAddonsImage }}
-          args :
+          args:
             - "--node-id=$(NODE_ID)"
             - "--v={{ .LogLevel }}"
             - "--csi-addons-address=$(CSIADDONS_ENDPOINT)"
-            - "--controller-port={{ .CSIAddonsPort }}"
+            - "--controller-port={{ .CSIAddonsRBDProvisionerPort }}"
             - "--pod=$(POD_NAME)"
             - "--namespace=$(POD_NAMESPACE)"
             - "--pod-uid=$(POD_UID)"
@@ -155,8 +178,13 @@ spec:
             - "--leader-election-lease-duration={{ .LeaderElectionLeaseDuration }}"
             - "--leader-election-renew-deadline={{ .LeaderElectionRenewDeadline }}"
             - "--leader-election-retry-period={{ .LeaderElectionRetryPeriod }}"
+            {{ if .CSILogRotation }}
+            - "--logtostderr=false"
+            - "--alsologtostderr=true"
+            - "--log_file={{ .CsiLogRootPath }}/log/{{ .CsiComponentName }}/csi-addons.log"
+            {{ end }}
           ports:
-            - containerPort: {{ .CSIAddonsPort }}
+            - containerPort: {{ .CSIAddonsRBDProvisionerPort }}
           env:
             - name: NODE_ID
               valueFrom:
@@ -177,13 +205,24 @@ spec:
             - name: CSIADDONS_ENDPOINT
               value: unix:///csi/csi-addons.sock
           imagePullPolicy: {{ .ImagePullPolicy }}
+          {{ if and .Privileged .CSILogRotation }}
+          securityContext:
+            privileged: true
+            capabilities:
+              add: []
+              drop: ["ALL"]
+          {{ end }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
+            {{ if .CSILogRotation }}
+            - mountPath: {{ .CsiLogRootPath }}/log/{{ .CsiComponentName }}
+              name: csi-log
+            {{ end }}
         {{ end }}
         - name: csi-rbdplugin
           image: {{ .CSIPluginImage }}
-          args :
+          args:
             - "--nodeid=$(NODE_ID)"
             - "--endpoint=$(CSI_ENDPOINT)"
             - "--v={{ .LogLevel }}"
@@ -191,6 +230,11 @@ spec:
             - "--controllerserver=true"
             - "--drivername={{ .DriverNamePrefix }}rbd.csi.ceph.com"
             - "--pidlimit=-1"
+            {{ if .CSILogRotation }}
+            - "--logtostderr=false"
+            - "--alsologtostderr=true"
+            - "--log_file={{ .CsiLogRootPath }}/log/{{ .CsiComponentName }}/csi-rbdplugin.log"
+            {{ end }}
             {{ if .EnableCSIAddonsSideCar }}
             - "--csi-addons-endpoint=$(CSIADDONS_ENDPOINT)"
             {{ end }}
@@ -220,11 +264,22 @@ spec:
               value: unix:///csi/csi-addons.sock
             {{ end }}
           imagePullPolicy: {{ .ImagePullPolicy }}
+          {{ if and .Privileged .CSILogRotation }}
+          securityContext:
+            privileged: true
+            capabilities:
+              add: []
+              drop: ["ALL"]
+          {{ end }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
             - mountPath: /dev
               name: host-dev
+            {{ if .CSILogRotation }}
+            - mountPath: {{ .CsiLogRootPath }}/log/{{ .CsiComponentName }}
+              name: csi-log
+            {{ end }}
             - mountPath: /sys
               name: host-sys
             - mountPath: /lib/modules
@@ -272,6 +327,15 @@ spec:
         - name: host-dev
           hostPath:
             path: /dev
+        {{ if .CSILogRotation }}
+        - name: csi-log
+          hostPath:
+            path: {{ .CsiLogRootPath }}/log/{{ .CsiComponentName }}
+            type: DirectoryOrCreate
+        - name: csi-logs-logrotate
+          emptyDir:
+            type: DirectoryOrCreate
+        {{ end }}
         - name: host-sys
           hostPath:
             path: /sys

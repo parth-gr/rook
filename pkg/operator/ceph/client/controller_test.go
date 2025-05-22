@@ -17,7 +17,6 @@ limitations under the License.
 package client
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"strings"
@@ -71,7 +70,8 @@ func TestValidateClient(t *testing.T) {
 }
 
 func TestGenerateClient(t *testing.T) {
-	p := &cephv1.CephClient{ObjectMeta: metav1.ObjectMeta{Name: "client1", Namespace: "myns"},
+	p := &cephv1.CephClient{
+		ObjectMeta: metav1.ObjectMeta{Name: "client1", Namespace: "myns"},
 		Spec: cephv1.ClientSpec{
 			Caps: map[string]string{
 				"osd": "allow *",
@@ -82,15 +82,14 @@ func TestGenerateClient(t *testing.T) {
 	}
 
 	client, caps := genClientEntity(p)
-	equal := bytes.Compare([]byte(client), []byte("client.client1"))
-	var res bool = equal == 0
-	assert.True(t, res)
+	assert.Equal(t, []byte(client), []byte("client.client1"))
 	assert.True(t, strings.Contains(strings.Join(caps, " "), "osd allow *"))
 	assert.True(t, strings.Contains(strings.Join(caps, " "), "mon allow rw"))
 	assert.True(t, strings.Contains(strings.Join(caps, " "), "mds allow rwx"))
 
 	// Fail if caps are empty
-	p2 := &cephv1.CephClient{ObjectMeta: metav1.ObjectMeta{Name: "client2", Namespace: "myns"},
+	p2 := &cephv1.CephClient{
+		ObjectMeta: metav1.ObjectMeta{Name: "client2", Namespace: "myns"},
 		Spec: cephv1.ClientSpec{
 			Caps: map[string]string{
 				"osd": "",
@@ -100,9 +99,7 @@ func TestGenerateClient(t *testing.T) {
 	}
 
 	client, _ = genClientEntity(p2)
-	equal = bytes.Compare([]byte(client), []byte("client.client2"))
-	res = equal == 0
-	assert.True(t, res)
+	assert.Equal(t, []byte(client), []byte("client.client2"))
 }
 
 func TestCephClientController(t *testing.T) {
@@ -125,9 +122,13 @@ func TestCephClientController(t *testing.T) {
 	// A Pool resource with metadata and spec.
 	cephClient := &cephv1.CephClient{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			UID:       types.UID("c47cac40-9bee-4d52-823b-ccd803ba5bfe"),
+			Name:       name,
+			Namespace:  namespace,
+			UID:        types.UID("c47cac40-9bee-4d52-823b-ccd803ba5bfe"),
+			Finalizers: []string{"cephclient.ceph.rook.io"},
+		},
+		TypeMeta: metav1.TypeMeta{
+			Kind: "CephClient",
 		},
 		Spec: cephv1.ClientSpec{
 			Caps: map[string]string{

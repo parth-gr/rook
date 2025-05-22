@@ -23,6 +23,7 @@ import (
 
 	"github.com/pkg/errors"
 
+	csiopv1a1 "github.com/ceph/ceph-csi-operator/api/v1alpha1"
 	"github.com/coreos/pkg/capnslog"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
 	rookclient "github.com/rook/rook/pkg/client/clientset/versioned/fake"
@@ -41,7 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-func TestCephClientController(t *testing.T) {
+func TestFilesystemSubvolumeGroupController(t *testing.T) {
 	ctx := context.TODO()
 	// Set DEBUG logging
 	capnslog.SetGlobalLogLevel(capnslog.DEBUG)
@@ -55,9 +56,13 @@ func TestCephClientController(t *testing.T) {
 	// A cephFilesystemSubVolumeGroup resource with metadata and spec.
 	cephFilesystemSubVolumeGroup := &cephv1.CephFilesystemSubVolumeGroup{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			UID:       types.UID("c47cac40-9bee-4d52-823b-ccd803ba5bfe"),
+			Name:       name,
+			Namespace:  namespace,
+			UID:        types.UID("c47cac40-9bee-4d52-823b-ccd803ba5bfe"),
+			Finalizers: []string{"cephfilesystemsubvolumegroup.ceph.rook.io"},
+		},
+		TypeMeta: metav1.TypeMeta{
+			Kind: "CephFilesystemSubvolumeGroup",
 		},
 		Spec: cephv1.CephFilesystemSubVolumeGroupSpec{
 			FilesystemName: namespace,
@@ -243,15 +248,18 @@ func TestCephClientController(t *testing.T) {
 
 	t.Run("success - external mode csi config is updated", func(t *testing.T) {
 		cephCluster.Spec.External.Enable = true
+		csiOpClientProfile := &csiopv1a1.ClientProfile{}
+
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephBlockPoolList{}, &csiopv1a1.ClientProfile{})
 		objects := []runtime.Object{
 			cephFilesystemSubVolumeGroup,
 			cephCluster,
+			csiOpClientProfile,
 		}
 		// Create a fake client to mock API calls.
 		cl = fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objects...).Build()
 		c.Client = cl
 
-		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephBlockPoolList{})
 		// Create a ReconcileCephFilesystemSubVolumeGroup object with the scheme and fake client.
 		r = &ReconcileCephFilesystemSubVolumeGroup{
 			client:           cl,
@@ -337,4 +345,29 @@ func Test_buildClusterID(t *testing.T) {
 	cephFilesystemSubVolumeGroup := &cephv1.CephFilesystemSubVolumeGroup{ObjectMeta: metav1.ObjectMeta{Namespace: "rook-ceph", Name: longName}, Spec: cephv1.CephFilesystemSubVolumeGroupSpec{FilesystemName: "myfs"}}
 	clusterID := buildClusterID(cephFilesystemSubVolumeGroup)
 	assert.Equal(t, "29e92135b7e8c014079b9f9f3566777d", clusterID)
+}
+
+func Test_formatPinning(t *testing.T) {
+	pinning := &cephv1.CephFilesystemSubVolumeGroupSpecPinning{}
+	pinningStatus := formatPinning(*pinning)
+	assert.Equal(t, "distributed=1", pinningStatus)
+
+	distributedValue := 0
+	pinning.Distributed = &distributedValue
+	pinningStatus = formatPinning(*pinning)
+	assert.Equal(t, "distributed=0", pinningStatus)
+
+	pinning.Distributed = nil
+
+	exportValue := 42
+	pinning.Export = &exportValue
+	pinningStatus = formatPinning(*pinning)
+	assert.Equal(t, "export=42", pinningStatus)
+
+	pinning.Export = nil
+
+	randomValue := 0.31
+	pinning.Random = &randomValue
+	pinningStatus = formatPinning(*pinning)
+	assert.Equal(t, "random=0.31", pinningStatus)
 }

@@ -21,6 +21,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v2"
 
@@ -38,7 +39,6 @@ type HelmHelper struct {
 func NewHelmHelper(helmPath string) *HelmHelper {
 	executor := &exec.CommandExecutor{}
 	return &HelmHelper{executor: executor, HelmPath: helmPath}
-
 }
 
 // Execute is wrapper for executing helm commands
@@ -46,11 +46,10 @@ func (h *HelmHelper) Execute(args ...string) (string, error) {
 	result, err := h.executor.ExecuteCommandWithOutput(h.HelmPath, args...)
 	if err != nil {
 		logger.Errorf("Errors Encountered while executing helm command %v: %v", result, err)
-		return result, fmt.Errorf("Failed to run helm command on args %v : %v , err -> %v", args, result, err)
+		return result, fmt.Errorf("failed to run helm command on args %v : %v , err -> %v", args, result, err)
 
 	}
 	return result, nil
-
 }
 
 func createValuesFile(path string, values map[string]interface{}) error {
@@ -99,15 +98,24 @@ func (h *HelmHelper) InstallLocalHelmChart(upgrade bool, namespace, chart string
 		cmdArgs = append(cmdArgs, "--namespace", namespace)
 	}
 
-	err = h.installChart(cmdArgs, values)
-	if err != nil {
-		return fmt.Errorf("failed to install local helm chart %s with in namespace: %v, err=%v", chart, namespace, err)
+	var lastErr error
+	maxRetries := 5
+	for i := 0; i < maxRetries; i++ {
+		err = h.installChart(cmdArgs, values)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to install local helm chart %s with in namespace: %v, err=%v", chart, namespace, err)
+			logger.Error(lastErr)
+			time.Sleep(time.Second)
+			continue
+		}
+		logger.Infof("helm chart %q installed successfully after %d attempt(s)", chart, i+1)
+		return nil
 	}
-	return nil
+	logger.Errorf("failed to install helm chart %s after %d attempts", chart, maxRetries)
+	return lastErr
 }
 
 func (h *HelmHelper) InstallVersionedChart(namespace, chart, version string, values map[string]interface{}) error {
-
 	logger.Infof("adding rook-release helm repo")
 	cmdArgs := []string{"repo", "add", "rook-release", "https://charts.rook.io/release"}
 	_, err := h.Execute(cmdArgs...)
@@ -156,7 +164,7 @@ func (h *HelmHelper) DeleteLocalRookHelmChart(namespace, deployName string) erro
 	_, err := h.Execute(cmdArgs...)
 	if err != nil {
 		logger.Errorf("could not delete helm chart with name  %v : %v", deployName, err)
-		return fmt.Errorf("Failed to delete helm chart with name  %v : %v", deployName, err)
+		return fmt.Errorf("failed to delete helm chart with name  %v : %v", deployName, err)
 	}
 
 	return nil

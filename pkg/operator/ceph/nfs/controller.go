@@ -100,6 +100,21 @@ func newReconciler(mgr manager.Manager, context *clusterd.Context, opManagerCont
 	}
 }
 
+func watchOwnedCoreObject[T client.Object](c controller.Controller, mgr manager.Manager, obj T) error {
+	return c.Watch(
+		source.Kind(
+			mgr.GetCache(),
+			obj,
+			handler.TypedEnqueueRequestForOwner[T](
+				mgr.GetScheme(),
+				mgr.GetRESTMapper(),
+				&cephv1.CephNFS{},
+			),
+			opcontroller.WatchPredicateForNonCRDObject[T](&cephv1.CephNFS{TypeMeta: controllerTypeMeta}, mgr.GetScheme()),
+		),
+	)
+}
+
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// Create a new controller
 	c, err := controller.New(controllerName, mgr, controller.Options{Reconciler: r})
@@ -109,20 +124,21 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	logger.Info("successfully started")
 
 	// Watch for changes on the cephNFS CRD object
-	err = c.Watch(source.Kind(mgr.GetCache(), &cephv1.CephNFS{TypeMeta: controllerTypeMeta}), &handler.EnqueueRequestForObject{}, opcontroller.WatchControllerPredicate())
+	err = c.Watch(
+		source.Kind(
+			mgr.GetCache(),
+			&cephv1.CephNFS{TypeMeta: controllerTypeMeta},
+			&handler.TypedEnqueueRequestForObject[*cephv1.CephNFS]{},
+			opcontroller.WatchControllerPredicate[*cephv1.CephNFS](mgr.GetScheme()),
+		),
+	)
 	if err != nil {
 		return err
 	}
 
 	// Watch all other resources
 	for _, t := range objectsToWatch {
-		ownerRequest := handler.EnqueueRequestForOwner(
-			mgr.GetScheme(),
-			mgr.GetRESTMapper(),
-			&cephv1.CephNFS{},
-		)
-		err = c.Watch(source.Kind(mgr.GetCache(), t), ownerRequest,
-			opcontroller.WatchPredicateForNonCRDObject(&cephv1.CephNFS{TypeMeta: controllerTypeMeta}, mgr.GetScheme()))
+		err = watchOwnedCoreObject(c, mgr, t)
 		if err != nil {
 			return err
 		}
@@ -160,9 +176,13 @@ func (r *ReconcileCephNFS) reconcile(request reconcile.Request) (reconcile.Resul
 	observedGeneration := cephNFS.ObjectMeta.Generation
 
 	// Set a finalizer so we can do cleanup before the object goes away
-	err = opcontroller.AddFinalizerIfNotPresent(r.opManagerContext, r.client, cephNFS)
+	generationUpdated, err := opcontroller.AddFinalizerIfNotPresent(r.opManagerContext, r.client, cephNFS)
 	if err != nil {
 		return reconcile.Result{}, *cephNFS, errors.Wrap(err, "failed to add finalizer")
+	}
+	if generationUpdated {
+		logger.Infof("reconciling the nfs %q after adding finalizer", cephNFS.Name)
+		return reconcile.Result{}, *cephNFS, nil
 	}
 
 	// The CR was just created, initializing status fields
@@ -294,7 +314,6 @@ func (r *ReconcileCephNFS) reconcile(request reconcile.Request) (reconcile.Resul
 	// Return and do not requeue
 	logger.Debug("done reconciling ceph nfs")
 	return reconcile.Result{}, *cephNFS, nil
-
 }
 
 func (r *ReconcileCephNFS) reconcileCreateCephNFS(cephNFS *cephv1.CephNFS) (reconcile.Result, error) {

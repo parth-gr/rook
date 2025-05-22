@@ -37,7 +37,8 @@ func (d v1CsiDriver) createCSIDriverInfo(
 	ctx context.Context,
 	clientset kubernetes.Interface,
 	name, fsGroupPolicy string,
-	attachRequired, seLinuxMountRequired bool) error {
+	attachRequired bool,
+) error {
 	mountInfo := false
 	// Create CSIDriver object
 	csiDriver := &v1k8scsi.CSIDriver{
@@ -49,10 +50,10 @@ func (d v1CsiDriver) createCSIDriverInfo(
 			PodInfoOnMount: &mountInfo,
 		},
 	}
-	if seLinuxMountRequired {
-		selinuxMount := true
-		csiDriver.Spec.SELinuxMount = &selinuxMount
-	}
+
+	selinuxMount := true
+	csiDriver.Spec.SELinuxMount = &selinuxMount
+
 	if fsGroupPolicy != "" {
 		policy := v1k8scsi.FSGroupPolicy(fsGroupPolicy)
 		csiDriver.Spec.FSGroupPolicy = &policy

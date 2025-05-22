@@ -24,12 +24,10 @@ import (
 	rookclient "github.com/rook/rook/pkg/client/clientset/versioned/fake"
 	"github.com/rook/rook/pkg/client/clientset/versioned/scheme"
 	"github.com/rook/rook/pkg/clusterd"
-	cephver "github.com/rook/rook/pkg/operator/ceph/version"
 	"github.com/rook/rook/pkg/operator/test"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/batch/v1"
-	"k8s.io/api/batch/v1beta1"
-	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -37,8 +35,26 @@ import (
 )
 
 func TestCreateOrUpdateCephCron(t *testing.T) {
-	cephCluster := cephv1.CephCluster{ObjectMeta: metav1.ObjectMeta{Namespace: "rook-ceph"}}
-	cephVersion := &cephver.CephVersion{Major: 16, Minor: 2, Extra: 0}
+	tolerations := []corev1.Toleration{
+		{
+			Key:      "key",
+			Operator: corev1.TolerationOpEqual,
+			Value:    "value",
+			Effect:   corev1.TaintEffectNoSchedule,
+		},
+	}
+	cephCluster := cephv1.CephCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "rook-ceph",
+		},
+		Spec: cephv1.ClusterSpec{
+			Placement: cephv1.PlacementSpec{
+				"all": {
+					Tolerations: tolerations,
+				},
+			},
+		},
+	}
 	ctx := context.TODO()
 	context := &clusterd.Context{
 		Clientset:     test.New(t, 1),
@@ -47,10 +63,6 @@ func TestCreateOrUpdateCephCron(t *testing.T) {
 
 	s := scheme.Scheme
 	err := v1.AddToScheme(s)
-	if err != nil {
-		assert.Fail(t, "failed to build scheme")
-	}
-	err = v1beta1.AddToScheme(s)
 	if err != nil {
 		assert.Fail(t, "failed to build scheme")
 	}
@@ -68,34 +80,12 @@ func TestCreateOrUpdateCephCron(t *testing.T) {
 		},
 	}
 
-	cronV1Beta1 := &v1beta1.CronJob{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      prunerName,
-			Namespace: "rook-ceph",
-		},
-	}
-
-	// check if v1beta1 cronJob is present and v1 cronJob is not
-	cntrlutil, err := r.createOrUpdateCephCron(cephCluster, cephVersion, false)
-	assert.NoError(t, err)
-	assert.Equal(t, cntrlutil, controllerutil.OperationResult("created"))
-
-	err = r.client.Get(ctx, types.NamespacedName{Namespace: "rook-ceph", Name: prunerName}, cronV1Beta1)
-	assert.NoError(t, err)
-
-	err = r.client.Get(ctx, types.NamespacedName{Namespace: "rook-ceph", Name: prunerName}, cronV1)
-	assert.Error(t, err)
-	assert.True(t, kerrors.IsNotFound(err))
-
-	// check if v1 cronJob is present and v1beta1 cronJob is not
-	cntrlutil, err = r.createOrUpdateCephCron(cephCluster, cephVersion, true)
+	// check if cronJob is created
+	cntrlutil, err := r.createOrUpdateCephCron(cephCluster, tolerations)
 	assert.NoError(t, err)
 	assert.Equal(t, cntrlutil, controllerutil.OperationResult("created"))
 
 	err = r.client.Get(ctx, types.NamespacedName{Namespace: "rook-ceph", Name: prunerName}, cronV1)
 	assert.NoError(t, err)
-
-	err = r.client.Get(ctx, types.NamespacedName{Namespace: "rook-ceph", Name: prunerName}, cronV1Beta1)
-	assert.Error(t, err)
-	assert.True(t, kerrors.IsNotFound(err))
+	assert.Equal(t, tolerations, cronV1.Spec.JobTemplate.Spec.Template.Spec.Tolerations, "Tolerations do not match")
 }

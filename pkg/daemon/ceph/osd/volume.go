@@ -34,7 +34,6 @@ import (
 	"github.com/rook/rook/pkg/daemon/ceph/client"
 	oposd "github.com/rook/rook/pkg/operator/ceph/cluster/osd"
 	"github.com/rook/rook/pkg/operator/ceph/cluster/osd/config"
-	cephver "github.com/rook/rook/pkg/operator/ceph/version"
 	"github.com/rook/rook/pkg/util/display"
 	"github.com/rook/rook/pkg/util/sys"
 )
@@ -60,19 +59,18 @@ var (
 	lvmConfPath   = "/etc/lvm/lvm.conf"
 	cvLogDir      = ""
 
-	// The mitigation of phantom ATARI partition problem is fixed in Ceph v16.2.6. Quincy doesn't have this problem from the beginning
-	// See https://github.com/ceph/ceph/pull/42469
-	cephIgnorePhantomAtariPartitionCephVersion = cephver.CephVersion{Major: 16, Minor: 2, Extra: 6}
-	isEncrypted                                = os.Getenv(oposd.EncryptedDeviceEnvVarName) == "true"
-	isOnPVC                                    = os.Getenv(oposd.PVCBackedOSDVarName) == "true"
+	isEncrypted = os.Getenv(oposd.EncryptedDeviceEnvVarName) == "true"
+	isOnPVC     = os.Getenv(oposd.PVCBackedOSDVarName) == "true"
 )
 
 type osdInfoBlock struct {
-	CephFsid string `json:"ceph_fsid"`
-	Device   string `json:"device"`
-	OsdID    int    `json:"osd_id"`
-	OsdUUID  string `json:"osd_uuid"`
-	Type     string `json:"type"`
+	CephFsid  string `json:"ceph_fsid"`
+	Device    string `json:"device"`
+	DeviceDb  string `json:"device_db"`
+	DeviceWal string `json:"device_wal"`
+	OsdID     int    `json:"osd_id"`
+	OsdUUID   string `json:"osd_uuid"`
+	Type      string `json:"type"`
 }
 
 type osdInfo struct {
@@ -231,7 +229,7 @@ func (a *OsdAgent) initializeBlockPVC(context *clusterd.Context, devices *Device
 	// Create a specific log directory so that each prepare command will have its own log
 	// Only do this if nothing is present so that we don't override existing logs
 	cvLogDir = path.Join(cephLogDir, a.nodeName)
-	err := os.MkdirAll(cvLogDir, 0750)
+	err := os.MkdirAll(cvLogDir, 0o750)
 	if err != nil {
 		logger.Errorf("failed to create ceph-volume log directory %q, continue with default %q. %v", cvLogDir, cephLogDir, err)
 		baseArgs = []string{"-oL", cephVolumeCmd, "raw", "prepare", storeFlag}
@@ -260,7 +258,8 @@ func (a *OsdAgent) initializeBlockPVC(context *clusterd.Context, devices *Device
 		// This will make the devices.Entries larger than usual
 		if _, ok := devices.Entries["metadata"]; ok {
 			metadataDev = true
-			metadataArg = append(metadataArg, []string{"--block.db",
+			metadataArg = append(metadataArg, []string{
+				"--block.db",
 				devices.Entries["metadata"].Config.Name,
 			}...)
 
@@ -269,7 +268,8 @@ func (a *OsdAgent) initializeBlockPVC(context *clusterd.Context, devices *Device
 
 		if _, ok := devices.Entries["wal"]; ok {
 			walDev = true
-			walArg = append(walArg, []string{"--block.wal",
+			walArg = append(walArg, []string{
+				"--block.wal",
 				devices.Entries["wal"].Config.Name,
 			}...)
 
@@ -377,7 +377,6 @@ func getEncryptedBlockPath(op, blockType string) string {
 
 // UpdateLVMConfig updates the lvm.conf file
 func UpdateLVMConfig(context *clusterd.Context, onPVC, lvBackedPV bool) error {
-
 	input, err := os.ReadFile(lvmConfPath)
 	if err != nil {
 		return errors.Wrapf(err, "failed to read lvm config file %q", lvmConfPath)
@@ -407,7 +406,7 @@ func UpdateLVMConfig(context *clusterd.Context, onPVC, lvBackedPV bool) error {
 		}
 	}
 
-	if err = os.WriteFile(lvmConfPath, output, 0600); err != nil {
+	if err = os.WriteFile(lvmConfPath, output, 0o600); err != nil {
 		return errors.Wrapf(err, "failed to update lvm config file %q", lvmConfPath)
 	}
 
@@ -446,15 +445,7 @@ func (a *OsdAgent) allowRawMode(context *clusterd.Context) (bool, error) {
 }
 
 // test if safe to use raw mode for a particular device
-func isSafeToUseRawMode(device *DeviceOsdIDEntry, cephVersion cephver.CephVersion) bool {
-	if device.DeviceInfo.Type == sys.DiskType {
-		// if this is a disk but the atari partition fix isn't in, we can't use raw mode
-		if !cephVersion.IsAtLeast(cephIgnorePhantomAtariPartitionCephVersion) {
-			logger.Debugf("won't use raw mode for disk %q since this is a disk and the atari partition issue isn't fixed", device.Config.Name)
-			return false
-		}
-	}
-
+func isSafeToUseRawMode(device *DeviceOsdIDEntry) bool {
 	// ceph-volume raw mode does not support more than one OSD per disk
 	if device.Config.OSDsPerDevice > 1 {
 		logger.Debugf("won't use raw mode for disk %q since osd per device is %d", device.Config.Name, device.Config.OSDsPerDevice)
@@ -517,7 +508,7 @@ func (a *OsdAgent) initializeDevices(context *clusterd.Context, devices *DeviceO
 		// which reports only the phantom partitions (and malformed OSD info) when they exist and
 		// ignores the original (correct) OSDs created on the raw disk.
 		// See: https://github.com/rook/rook/issues/7940
-		if allowRawMode && isSafeToUseRawMode(device, a.clusterInfo.CephVersion) {
+		if allowRawMode && isSafeToUseRawMode(device) {
 			rawDevices.Entries[name] = device
 			continue
 		}
@@ -595,7 +586,7 @@ func (a *OsdAgent) initializeDevicesRawMode(context *clusterd.Context, devices *
 func (a *OsdAgent) initializeDevicesLVMMode(context *clusterd.Context, devices *DeviceOsdMapping) error {
 	storeFlag := a.storeConfig.GetStoreFlag()
 	logPath := "/tmp/ceph-log"
-	if err := os.MkdirAll(logPath, 0700); err != nil {
+	if err := os.MkdirAll(logPath, 0o700); err != nil {
 		return errors.Wrapf(err, "failed to create dir %q", logPath)
 	}
 
@@ -1005,6 +996,8 @@ func GetCephVolumeRawOSDs(context *clusterd.Context, clusterInfo *client.Cluster
 	// blockPath represents the path of the OSD block
 	// it can be the one passed from the function's call or discovered by the c-v list command
 	var blockPath string
+	var blockMetadataPath string
+	var blockWalPath string
 
 	// If block is passed, check if it's an encrypted device, this is needed to get the correct
 	// device path and populate the OSDInfo for that OSD
@@ -1135,8 +1128,12 @@ func GetCephVolumeRawOSDs(context *clusterd.Context, clusterInfo *client.Cluster
 		// If no block is specified let's take the one we discovered
 		if setDevicePathFromList {
 			blockPath = osdInfo.Device
+			blockMetadataPath = osdInfo.DeviceDb
+			blockWalPath = osdInfo.DeviceWal
 		} else {
 			blockPath = block
+			blockMetadataPath = metadataBlock
+			blockWalPath = walBlock
 		}
 
 		osdStore := osdInfo.Type
@@ -1151,8 +1148,8 @@ func GetCephVolumeRawOSDs(context *clusterd.Context, clusterInfo *client.Cluster
 			// Thus in the activation sequence we might activate the wrong OSD and have OSDInfo messed up
 			// Hence, let's use the PVC name instead which will always remain consistent
 			BlockPath:     blockPath,
-			MetadataPath:  metadataBlock,
-			WalPath:       walBlock,
+			MetadataPath:  blockMetadataPath,
+			WalPath:       blockWalPath,
 			SkipLVRelease: true,
 			LVBackedPV:    lvBackedPV,
 			CVMode:        cvMode,
@@ -1165,7 +1162,12 @@ func GetCephVolumeRawOSDs(context *clusterd.Context, clusterInfo *client.Cluster
 			if err != nil {
 				return nil, errors.Wrapf(err, "failed to get device info for %q", blockPath)
 			}
-			osd.DeviceClass = sys.GetDiskDeviceClass(diskInfo)
+			deviceType := sys.GetDiskDeviceType(diskInfo)
+			osd.DeviceType = deviceType
+			logger.Infof("setting device type %q for device %q", osd.DeviceType, diskInfo.Name)
+
+			crushDeviceClass := sys.GetDiskDeviceClass(oposd.CrushDeviceClassVarName, deviceType)
+			osd.DeviceClass = crushDeviceClass
 			logger.Infof("setting device class %q for device %q", osd.DeviceClass, diskInfo.Name)
 		}
 
@@ -1179,7 +1181,7 @@ func GetCephVolumeRawOSDs(context *clusterd.Context, clusterInfo *client.Cluster
 		// pod
 		// For the cleanup pod we don't want to close the encrypted block since it will sanitize it
 		// first and then close it
-		if os.Getenv(oposd.CephVolumeEncryptedKeyEnvVarName) != "" {
+		if osd.Encrypted && os.Getenv(oposd.CephVolumeEncryptedKeyEnvVarName) != "" {
 			// If label and subsystem are not set on the encrypted block let's set it
 			// They will be set if the OSD deployment has been removed manually and the prepare job
 			// runs again.
@@ -1237,7 +1239,7 @@ func callCephVolume(context *clusterd.Context, args ...string) (string, error) {
 	// failure log later without also printing out past failures
 	// TODO: does this mess up expectations from the ceph log collector daemon?
 	logPath := "/tmp/ceph-log"
-	if err := os.MkdirAll(logPath, 0700); err != nil {
+	if err := os.MkdirAll(logPath, 0o700); err != nil {
 		return "", errors.Wrapf(err, "failed to create dir %q", logPath)
 	}
 	baseArgs := []string{"-oL", cephVolumeCmd, "--log-path", logPath}

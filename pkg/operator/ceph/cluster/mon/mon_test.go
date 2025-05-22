@@ -43,8 +43,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
 )
 
 // generate a standard mon config from a mon id w/ default port and IP 2.4.6.{1,2,3,...}
@@ -190,7 +193,7 @@ func TestStartMonPods(t *testing.T) {
 	}
 
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Quincy, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Squid, c.spec)
 	assert.NoError(t, err)
 
 	// test annotations
@@ -201,7 +204,7 @@ func TestStartMonPods(t *testing.T) {
 	validateStart(t, c)
 
 	// starting again should be a no-op
-	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Quincy, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Squid, c.spec)
 	assert.NoError(t, err)
 
 	validateStart(t, c)
@@ -215,7 +218,7 @@ func TestOperatorRestart(t *testing.T) {
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 
 	// start a basic cluster
-	info, err := c.Start(c.ClusterInfo, c.rookImage, cephver.Quincy, c.spec)
+	info, err := c.Start(c.ClusterInfo, c.rookImage, cephver.Squid, c.spec)
 	assert.NoError(t, err)
 	assert.NoError(t, info.IsInitialized())
 
@@ -225,7 +228,7 @@ func TestOperatorRestart(t *testing.T) {
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 
 	// starting again should be a no-op, but will not result in an error
-	info, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Quincy, c.spec)
+	info, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Squid, c.spec)
 	assert.NoError(t, err)
 	assert.NoError(t, info.IsInitialized())
 
@@ -243,7 +246,7 @@ func TestOperatorRestartHostNetwork(t *testing.T) {
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 
 	// start a basic cluster
-	info, err := c.Start(c.ClusterInfo, c.rookImage, cephver.Quincy, c.spec)
+	info, err := c.Start(c.ClusterInfo, c.rookImage, cephver.Squid, c.spec)
 	assert.NoError(t, err)
 	assert.NoError(t, info.IsInitialized())
 
@@ -255,7 +258,7 @@ func TestOperatorRestartHostNetwork(t *testing.T) {
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 
 	// starting again should be a no-op, but still results in an error
-	info, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Quincy, c.spec)
+	info, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Squid, c.spec)
 	assert.NoError(t, err)
 	assert.NoError(t, info.IsInitialized(), info)
 
@@ -278,8 +281,15 @@ func TestPersistMons(t *testing.T) {
 	c := New(context.TODO(), &clusterd.Context{Clientset: clientset}, "ns", cephv1.ClusterSpec{Annotations: cephv1.AnnotationsSpec{cephv1.KeyClusterMetadata: cephv1.Annotations{"key": "value"}}}, ownerInfo)
 	setCommonMonProperties(c, 1, cephv1.MonSpec{Count: 3, AllowMultiplePerNode: true}, "myversion")
 
+	expectedPorts := []discoveryv1.EndpointPort{
+		{Name: ptr.To(DefaultMsgr2PortName), Protocol: ptr.To(v1.ProtocolTCP), Port: ptr.To(DefaultMsgr2Port)},
+		{Name: ptr.To(DefaultMsgr1PortName), Protocol: ptr.To(v1.ProtocolTCP), Port: ptr.To(DefaultMsgr1Port)},
+	}
+
 	// Persist mon a
-	err := c.persistExpectedMonDaemons()
+	err := c.persistExpectedMonDaemonsInConfigMap()
+	assert.NoError(t, err)
+	err = c.persistExpectedMonDaemonsAsEndpointSlice()
 	assert.NoError(t, err)
 
 	cm, err := c.context.Clientset.CoreV1().ConfigMaps(c.Namespace).Get(context.TODO(), EndpointConfigMapName, metav1.GetOptions{})
@@ -287,15 +297,142 @@ func TestPersistMons(t *testing.T) {
 	assert.Equal(t, "a=1.2.3.1:3300", cm.Data[EndpointDataKey])
 	assert.Equal(t, map[string]string{"key": "value"}, cm.Annotations)
 
+	ep, err := c.context.Clientset.DiscoveryV1().EndpointSlices(c.Namespace).Get(context.TODO(), endpointSliceNameIPv4, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, "1.2.3.1", ep.Endpoints[0].Addresses[0])
+	assert.ElementsMatch(t, expectedPorts, ep.Ports)
+	assert.Equal(t, map[string]string{"key": "value"}, cm.Annotations)
+
 	// Persist mon b, and remove mon a for simply testing the configmap is updated
-	c.ClusterInfo.Monitors["b"] = &cephclient.MonInfo{Name: "b", Endpoint: "4.5.6.7:3300"}
-	delete(c.ClusterInfo.Monitors, "a")
-	err = c.persistExpectedMonDaemons()
+	c.ClusterInfo.InternalMonitors["b"] = &cephclient.MonInfo{Name: "b", Endpoint: "4.5.6.7:3300"}
+	delete(c.ClusterInfo.InternalMonitors, "a")
+	err = c.persistExpectedMonDaemonsInConfigMap()
+	assert.NoError(t, err)
+	err = c.persistExpectedMonDaemonsAsEndpointSlice()
 	assert.NoError(t, err)
 
 	cm, err = c.context.Clientset.CoreV1().ConfigMaps(c.Namespace).Get(context.TODO(), EndpointConfigMapName, metav1.GetOptions{})
 	assert.NoError(t, err)
 	assert.Equal(t, "b=4.5.6.7:3300", cm.Data[EndpointDataKey])
+
+	ep, err = c.context.Clientset.DiscoveryV1().EndpointSlices(c.Namespace).Get(context.TODO(), endpointSliceNameIPv4, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, "4.5.6.7", ep.Endpoints[0].Addresses[0])
+	assert.ElementsMatch(t, expectedPorts, ep.Ports)
+	assert.Equal(t, map[string]string{"key": "value"}, cm.Annotations)
+}
+
+func TestCreateEndpointSlices(t *testing.T) {
+	clientset := test.New(t, 1)
+	ownerInfo := cephclient.NewMinimumOwnerInfoWithOwnerRef()
+
+	// RequireMsgr2=false
+	c := New(context.TODO(), &clusterd.Context{Clientset: clientset}, "ns", cephv1.ClusterSpec{}, ownerInfo)
+	expectedPorts := []discoveryv1.EndpointPort{
+		{Name: ptr.To(DefaultMsgr2PortName), Protocol: ptr.To(v1.ProtocolTCP), Port: ptr.To(DefaultMsgr2Port)},
+		{Name: ptr.To(DefaultMsgr1PortName), Protocol: ptr.To(v1.ProtocolTCP), Port: ptr.To(DefaultMsgr1Port)},
+	}
+	testCreateEndpointSlicesForCluster(t, c, expectedPorts)
+
+	// RequireMsgr2=true
+	c = New(
+		context.TODO(),
+		&clusterd.Context{Clientset: clientset},
+		"ns",
+		cephv1.ClusterSpec{
+			Network: cephv1.NetworkSpec{
+				Connections: &cephv1.ConnectionsSpec{
+					RequireMsgr2: true,
+				},
+			},
+		}, ownerInfo)
+	expectedPorts = []discoveryv1.EndpointPort{
+		{Name: ptr.To(DefaultMsgr2PortName), Protocol: ptr.To(v1.ProtocolTCP), Port: ptr.To(DefaultMsgr2Port)},
+	}
+	testCreateEndpointSlicesForCluster(t, c, expectedPorts)
+}
+
+func testCreateEndpointSlicesForCluster(t *testing.T, c *Cluster, expectedPorts []discoveryv1.EndpointPort) {
+	ipv4Addresses := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+	ipv4Mons := []cephclient.MonInfo{
+		{Name: "a", Endpoint: fmt.Sprintf("%s:6789", ipv4Addresses[0])},
+		{Name: "b", Endpoint: fmt.Sprintf("%s:6789", ipv4Addresses[1])},
+		{Name: "c", Endpoint: fmt.Sprintf("%s:6789", ipv4Addresses[2])},
+	}
+	ipv6Addresses := []string{"2001:db8::1", "2001:db8::2", "2001:db8::3"}
+	ipv6Mons := []cephclient.MonInfo{
+		{Name: "d", Endpoint: fmt.Sprintf("[%s]:6789", ipv6Addresses[0])},
+		{Name: "e", Endpoint: fmt.Sprintf("[%s]:6789", ipv6Addresses[1])},
+		{Name: "f", Endpoint: fmt.Sprintf("[%s]:6789", ipv6Addresses[2])},
+	}
+
+	// IPv4 test
+	c.ClusterInfo.InternalMonitors = map[string]*cephclient.MonInfo{}
+	for _, mon := range ipv4Mons {
+		c.ClusterInfo.InternalMonitors[mon.Name] = &mon
+	}
+
+	err := c.persistExpectedMonDaemonsAsEndpointSlice()
+	assert.NoError(t, err)
+
+	epSliceIPv4, err := c.context.Clientset.DiscoveryV1().EndpointSlices(c.Namespace).Get(context.TODO(), endpointSliceNameIPv4, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, discoveryv1.AddressTypeIPv4, epSliceIPv4.AddressType)
+	assert.Len(t, epSliceIPv4.Endpoints, 1)
+	assert.ElementsMatch(t, ipv4Addresses, epSliceIPv4.Endpoints[0].Addresses)
+	assert.ElementsMatch(t, expectedPorts, epSliceIPv4.Ports)
+
+	_, err = c.context.Clientset.DiscoveryV1().EndpointSlices(c.Namespace).Get(context.TODO(), endpointSliceNameIPv6, metav1.GetOptions{})
+	assert.True(t, kerrors.IsNotFound(err))
+
+	// IPv6 test
+	c.ClusterInfo.InternalMonitors = map[string]*cephclient.MonInfo{}
+	for _, mon := range ipv6Mons {
+		c.ClusterInfo.InternalMonitors[mon.Name] = &mon
+	}
+
+	err = c.persistExpectedMonDaemonsAsEndpointSlice()
+	assert.NoError(t, err)
+
+	_, err = c.context.Clientset.DiscoveryV1().EndpointSlices(c.Namespace).Get(context.TODO(), endpointSliceNameIPv4, metav1.GetOptions{})
+	assert.True(t, kerrors.IsNotFound(err))
+
+	epSliceIPv6, err := c.context.Clientset.DiscoveryV1().EndpointSlices(c.Namespace).Get(context.TODO(), endpointSliceNameIPv6, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, discoveryv1.AddressTypeIPv6, epSliceIPv6.AddressType)
+	assert.Len(t, epSliceIPv6.Endpoints, 1)
+	assert.ElementsMatch(t, ipv6Addresses, epSliceIPv6.Endpoints[0].Addresses)
+	assert.ElementsMatch(t, expectedPorts, epSliceIPv6.Ports)
+
+	// Mixed IPv4 and IPv6 test.
+	// Note that this normally doesn't happen, because rook uses only IPv4 or
+	// only IPv6 mons. But in the future, migration between IPv4 and IPv6 might
+	// be supported, and then, during migration, the old mons would use the
+	// old IP family and the new mons would use the new IP family.
+	c.ClusterInfo.InternalMonitors = map[string]*cephclient.MonInfo{}
+	for _, mon := range ipv4Mons {
+		c.ClusterInfo.InternalMonitors[mon.Name] = &mon
+	}
+	for _, mon := range ipv6Mons {
+		c.ClusterInfo.InternalMonitors[mon.Name] = &mon
+	}
+
+	err = c.persistExpectedMonDaemonsAsEndpointSlice()
+	assert.NoError(t, err)
+
+	epSliceIPv4, err = c.context.Clientset.DiscoveryV1().EndpointSlices(c.Namespace).Get(context.TODO(), endpointSliceNameIPv4, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, discoveryv1.AddressTypeIPv4, epSliceIPv4.AddressType)
+	assert.Len(t, epSliceIPv4.Endpoints, 1)
+	assert.ElementsMatch(t, ipv4Addresses, epSliceIPv4.Endpoints[0].Addresses)
+	assert.ElementsMatch(t, expectedPorts, epSliceIPv4.Ports)
+
+	epSliceIPv6, err = c.context.Clientset.DiscoveryV1().EndpointSlices(c.Namespace).Get(context.TODO(), endpointSliceNameIPv6, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, discoveryv1.AddressTypeIPv6, epSliceIPv6.AddressType)
+	assert.Len(t, epSliceIPv6.Endpoints, 1)
+	assert.ElementsMatch(t, ipv6Addresses, epSliceIPv6.Endpoints[0].Addresses)
+	assert.ElementsMatch(t, expectedPorts, epSliceIPv6.Ports)
 }
 
 func TestSaveMonEndpoints(t *testing.T) {
@@ -317,7 +454,7 @@ func TestSaveMonEndpoints(t *testing.T) {
 	assert.Equal(t, "-1", cm.Data[opcontroller.MaxMonIDKey])
 
 	// update the config map
-	c.ClusterInfo.Monitors["a"].Endpoint = "2.3.4.5:6789"
+	c.ClusterInfo.InternalMonitors["a"].Endpoint = "2.3.4.5:6789"
 	c.maxMonID = 2
 	c.mapping.Schedule["a"] = &opcontroller.MonScheduleInfo{
 		Name:     "node0",
@@ -507,23 +644,14 @@ func TestConfigureArbiter(t *testing.T) {
 	c.context = &clusterd.Context{Clientset: test.New(t, 5), Executor: executor}
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(5)
 
-	t.Run("no arbiter failover for old ceph version", func(t *testing.T) {
-		c.arbiterMon = "changed"
-		c.ClusterInfo.CephVersion = cephver.CephVersion{Major: 16, Minor: 2, Extra: 6}
-		err := c.ConfigureArbiter()
-		assert.NoError(t, err)
-		assert.False(t, setNewTiebreaker)
-	})
 	t.Run("stretch mode already configured - new", func(t *testing.T) {
 		c.arbiterMon = currentArbiter
-		c.ClusterInfo.CephVersion = cephver.CephVersion{Major: 16, Minor: 2, Extra: 7}
 		err := c.ConfigureArbiter()
 		assert.NoError(t, err)
 		assert.False(t, setNewTiebreaker)
 	})
 	t.Run("tiebreaker changed", func(t *testing.T) {
 		c.arbiterMon = "changed"
-		c.ClusterInfo.CephVersion = cephver.CephVersion{Major: 16, Minor: 2, Extra: 7}
 		err := c.ConfigureArbiter()
 		assert.NoError(t, err)
 		assert.True(t, setNewTiebreaker)
@@ -568,6 +696,7 @@ func TestFindAvailableZoneMon(t *testing.T) {
 	assert.Error(t, err)
 	assert.Equal(t, "", availableZone)
 }
+
 func TestFindAvailableZoneForStretchedMon(t *testing.T) {
 	c := &Cluster{spec: cephv1.ClusterSpec{
 		Mon: cephv1.MonSpec{
@@ -663,16 +792,24 @@ func TestMonVolumeClaimTemplate(t *testing.T) {
 	}{
 		{"no template", fields{cephv1.ClusterSpec{}}, args{&monConfig{Zone: "z1"}}, nil},
 		{"default template", fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{VolumeClaimTemplate: defaultTemplate}}}, args{&monConfig{Zone: "z1"}}, defaultTemplate.ToPVC()},
-		{"default template with 3 zones", fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{
-			VolumeClaimTemplate: defaultTemplate,
-			Zones:               []cephv1.MonZoneSpec{{Name: "z1"}, {Name: "z2"}, {Name: "z3"}}}}},
+		{
+			"default template with 3 zones",
+			fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{
+				VolumeClaimTemplate: defaultTemplate,
+				Zones:               []cephv1.MonZoneSpec{{Name: "z1"}, {Name: "z2"}, {Name: "z3"}},
+			}}},
 			args{&monConfig{Zone: "z1"}},
-			defaultTemplate.ToPVC()},
-		{"overridden template", fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{
-			VolumeClaimTemplate: defaultTemplate,
-			Zones:               []cephv1.MonZoneSpec{{Name: "z1", VolumeClaimTemplate: zoneTemplate}, {Name: "z2"}, {Name: "z3"}}}}},
+			defaultTemplate.ToPVC(),
+		},
+		{
+			"overridden template",
+			fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{
+				VolumeClaimTemplate: defaultTemplate,
+				Zones:               []cephv1.MonZoneSpec{{Name: "z1", VolumeClaimTemplate: zoneTemplate}, {Name: "z2"}, {Name: "z3"}},
+			}}},
 			args{&monConfig{Zone: "z1"}},
-			zoneTemplate.ToPVC()},
+			zoneTemplate.ToPVC(),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -685,6 +822,71 @@ func TestMonVolumeClaimTemplate(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoveExtraMonDeployments(t *testing.T) {
+	namespace := "ns"
+	context, err := newTestStartCluster(t, namespace)
+	assert.NoError(t, err)
+	c := newCluster(context, namespace, true, v1.ResourceRequirements{})
+	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
+
+	// Nothing to remove when the mons match the deployment
+	mons := []*monConfig{
+		{ResourceName: "rook-ceph-mon-a", DaemonName: "a"},
+	}
+	deployments := []apps.Deployment{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "rook-ceph-mon-a",
+				Labels: map[string]string{"ceph_daemon_id": "a"},
+			},
+		},
+	}
+	c.spec.Mon.Count = 1
+	removed := c.checkForExtraMonResources(mons, deployments)
+	assert.Equal(t, "", removed)
+
+	// Remove an extra mon deployment
+	deployments = append(deployments, apps.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "rook-ceph-mon-b",
+			Labels: map[string]string{"ceph_daemon_id": "b"},
+		},
+	})
+	removed = c.checkForExtraMonResources(mons, deployments)
+	assert.Equal(t, "b", removed)
+
+	// Nothing to remove when there are not enough deployments for the expected mons
+	mons = []*monConfig{
+		{ResourceName: "rook-ceph-mon-a", DaemonName: "a"},
+		{ResourceName: "rook-ceph-mon-b", DaemonName: "b"},
+		{ResourceName: "rook-ceph-mon-c", DaemonName: "c"},
+	}
+	c.spec.Mon.Count = 3
+	removed = c.checkForExtraMonResources(mons, deployments)
+	assert.Equal(t, "", removed)
+
+	// Do not remove a mon when it was during failover and only a single mon is in the list, even if extra deployments exist
+	mons = []*monConfig{
+		{ResourceName: "rook-ceph-mon-d", DaemonName: "d"},
+	}
+	deployments = append(deployments, apps.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "rook-ceph-mon-c",
+			Labels: map[string]string{"ceph_daemon_id": "c"},
+		},
+	})
+	deployments = append(deployments, apps.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "rook-ceph-mon-d",
+			Labels: map[string]string{"ceph_daemon_id": "d"},
+		},
+	})
+	c.spec.Mon.Count = 3
+	removed = c.checkForExtraMonResources(mons, deployments)
+	assert.Equal(t, "", removed)
+}
+
 func TestStretchMonVolumeClaimTemplate(t *testing.T) {
 	generalSC := "generalSC"
 	zoneSC := "zoneSC"
@@ -704,16 +906,24 @@ func TestStretchMonVolumeClaimTemplate(t *testing.T) {
 	}{
 		{"no template", fields{cephv1.ClusterSpec{}}, args{&monConfig{Zone: "z1"}}, nil},
 		{"default template", fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{VolumeClaimTemplate: defaultTemplate}}}, args{&monConfig{Zone: "z1"}}, defaultTemplate.ToPVC()},
-		{"default template with 3 zones", fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{
-			VolumeClaimTemplate: defaultTemplate,
-			StretchCluster:      &cephv1.StretchClusterSpec{Zones: []cephv1.MonZoneSpec{{Name: "z1"}, {Name: "z2"}, {Name: "z3"}}}}}},
+		{
+			"default template with 3 zones",
+			fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{
+				VolumeClaimTemplate: defaultTemplate,
+				StretchCluster:      &cephv1.StretchClusterSpec{Zones: []cephv1.MonZoneSpec{{Name: "z1"}, {Name: "z2"}, {Name: "z3"}}},
+			}}},
 			args{&monConfig{Zone: "z1"}},
-			defaultTemplate.ToPVC()},
-		{"overridden template", fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{
-			VolumeClaimTemplate: defaultTemplate,
-			StretchCluster:      &cephv1.StretchClusterSpec{Zones: []cephv1.MonZoneSpec{{Name: "z1", VolumeClaimTemplate: zoneTemplate}, {Name: "z2"}, {Name: "z3"}}}}}},
+			defaultTemplate.ToPVC(),
+		},
+		{
+			"overridden template",
+			fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{
+				VolumeClaimTemplate: defaultTemplate,
+				StretchCluster:      &cephv1.StretchClusterSpec{Zones: []cephv1.MonZoneSpec{{Name: "z1", VolumeClaimTemplate: zoneTemplate}, {Name: "z2"}, {Name: "z3"}}},
+			}}},
 			args{&monConfig{Zone: "z1"}},
-			zoneTemplate.ToPVC()},
+			zoneTemplate.ToPVC(),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -778,7 +988,6 @@ func TestArbiterPlacement(t *testing.T) {
 }
 
 func TestCheckIfArbiterReady(t *testing.T) {
-
 	c := &Cluster{
 		Namespace: "ns",
 		spec: cephv1.ClusterSpec{
@@ -791,7 +1000,8 @@ func TestCheckIfArbiterReady(t *testing.T) {
 					},
 				},
 			},
-		}}
+		},
+	}
 	crushZoneCount := 0
 	balanced := true
 	executor := &exectest.MockExecutor{
@@ -814,7 +1024,6 @@ func TestCheckIfArbiterReady(t *testing.T) {
 						 ,{"id": -%d,"name": "zone%d~ssd","type_id": 1,"type_name": "zone","weight": 2056}`, i+5, i, weight, i+6, i)
 				}
 				return fmt.Sprintf(`{"buckets": [%s]}`, crushBuckets), nil
-
 			}
 			return "", fmt.Errorf("unrecognized output file command: %s %v", command, args)
 		},
@@ -866,7 +1075,8 @@ func TestSkipReconcile(t *testing.T) {
 				k8sutil.AppAttr: AppName,
 				config.MonType:  "a",
 			},
-		}}
+		},
+	}
 
 	deployment, err := c.context.Clientset.AppsV1().Deployments(c.ClusterInfo.Namespace).Create(c.ClusterInfo.Context, monDeployment, metav1.CreateOptions{})
 	assert.NoError(t, err)
@@ -895,7 +1105,8 @@ func TestHasMonPathChanged(t *testing.T) {
 			Labels: map[string]string{
 				"pvc_name": "test-pvc",
 			},
-		}}
+		},
+	}
 
 	pvcTemplate := &v1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{

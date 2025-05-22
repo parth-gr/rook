@@ -178,11 +178,11 @@ func ParsePoolDetails(in []byte) (CephStoragePoolDetails, error) {
 	return poolDetails, nil
 }
 
-func CreatePool(context *clusterd.Context, clusterInfo *ClusterInfo, clusterSpec *cephv1.ClusterSpec, pool cephv1.NamedPoolSpec) error {
+func CreatePool(context *clusterd.Context, clusterInfo *ClusterInfo, clusterSpec *cephv1.ClusterSpec, pool *cephv1.NamedPoolSpec) error {
 	return CreatePoolWithPGs(context, clusterInfo, clusterSpec, pool, DefaultPGCount)
 }
 
-func CreatePoolWithPGs(context *clusterd.Context, clusterInfo *ClusterInfo, clusterSpec *cephv1.ClusterSpec, pool cephv1.NamedPoolSpec, pgCount string) error {
+func CreatePoolWithPGs(context *clusterd.Context, clusterInfo *ClusterInfo, clusterSpec *cephv1.ClusterSpec, pool *cephv1.NamedPoolSpec, pgCount string) error {
 	if pool.Name == "" {
 		return errors.New("pool name must be specified")
 	}
@@ -196,7 +196,7 @@ func CreatePoolWithPGs(context *clusterd.Context, clusterInfo *ClusterInfo, clus
 	}
 
 	if pool.IsReplicated() {
-		return createReplicatedPoolForApp(context, clusterInfo, clusterSpec, pool, pgCount)
+		return createReplicatedPoolForApp(context, clusterInfo, clusterSpec, *pool, pgCount)
 	}
 
 	if !pool.IsErasureCoded() {
@@ -215,27 +215,59 @@ func CreatePoolWithPGs(context *clusterd.Context, clusterInfo *ClusterInfo, clus
 		context,
 		clusterInfo,
 		ecProfileName,
-		pool,
+		*pool,
 		pgCount,
 		true /* enableECOverwrite */)
 }
 
+func IsPoolEmpty(context *clusterd.Context, clusterInfo *ClusterInfo, name string, radosNamespaces []string) (bool, string, error) {
+	logger.Debugf("checking if pool %q in namespace %q is empty", name, clusterInfo.Namespace)
+
+	isEmpty, err := checkIsPoolEmpty(context, clusterInfo, name)
+	if err != nil {
+		return false, fmt.Sprintf("failed to check if pool %q is empty", name), err
+	}
+	if !isEmpty {
+		return false, fmt.Sprintf("pool %q contains images or snapshots and cannot be deleted", name), nil
+	}
+	// Check the rados namespaces for images/snapshots
+	for _, radosNamespace := range radosNamespaces {
+		containsImages, err := checkForImagesInRadosNamespace(context, clusterInfo, name, radosNamespace)
+		if err != nil || containsImages {
+			return false, fmt.Sprintf("rados namespace %q contains images or snapshots preventing pool %q deletion", radosNamespace, name), nil
+		}
+	}
+	// No images/snapshots found in the pool or rados namespaces
+	return true, fmt.Sprintf("pool %q is empty and can be deleted", name), nil
+}
+
 func checkForImagesInPool(context *clusterd.Context, clusterInfo *ClusterInfo, name string) error {
+	isEmpty, err := checkIsPoolEmpty(context, clusterInfo, name)
+	if err != nil {
+		return err
+	}
+	if isEmpty {
+		return nil
+	}
+	return errors.Errorf("pool %q contains images/snapshots", name)
+}
+
+func checkIsPoolEmpty(context *clusterd.Context, clusterInfo *ClusterInfo, name string) (bool, error) {
 	var err error
 	logger.Debugf("checking any images/snapshots present in pool %q", name)
 	stats, err := GetPoolStatistics(context, clusterInfo, name)
 	if err != nil {
 		if strings.Contains(err.Error(), "No such file or directory") {
-			return nil
+			return false, nil
 		}
-		return errors.Wrapf(err, "failed to list images/snapshots in pool %s", name)
+		return false, errors.Wrapf(err, "failed to list images/snapshots in pool %s", name)
 	}
 	if stats.Images.Count == 0 && stats.Images.SnapCount == 0 {
 		logger.Infof("no images/snapshots present in pool %q", name)
-		return nil
+		return true, nil
 	}
 
-	return errors.Errorf("pool %q contains images/snapshots", name)
+	return false, nil
 }
 
 // DeletePool purges a pool from Ceph
@@ -253,16 +285,16 @@ func DeletePool(context *clusterd.Context, clusterInfo *ClusterInfo, name string
 
 	logger.Infof("purging pool %q (id=%d)", name, pool.Number)
 	args := []string{"osd", "pool", "delete", name, name, reallyConfirmFlag}
-	_, err = NewCephCommand(context, clusterInfo, args).Run()
+	output, err := NewCephCommand(context, clusterInfo, args).Run()
 	if err != nil {
-		return errors.Wrapf(err, "failed to delete pool %q", name)
+		return errors.Wrapf(err, "failed to delete pool %q. %s", name, string(output))
 	}
 
 	// remove the crush rule for this pool and ignore the error in case the rule is still in use or not found
 	args = []string{"osd", "crush", "rule", "rm", name}
-	_, err = NewCephCommand(context, clusterInfo, args).Run()
+	output, err = NewCephCommand(context, clusterInfo, args).Run()
 	if err != nil {
-		logger.Errorf("failed to delete crush rule %q. %v", name, err)
+		logger.Errorf("failed to delete crush rule %q. %v. %s", name, err, string(output))
 	}
 
 	logger.Infof("purge completed for pool %q", name)
@@ -280,9 +312,9 @@ func givePoolAppTag(context *clusterd.Context, clusterInfo *ClusterInfo, poolNam
 	}
 
 	args := []string{"osd", "pool", "application", "enable", poolName, appName, confirmFlag}
-	_, err = NewCephCommand(context, clusterInfo, args).Run()
+	output, err := NewCephCommand(context, clusterInfo, args).Run()
 	if err != nil {
-		return errors.Wrapf(err, "failed to enable application %q on pool %q", appName, poolName)
+		return errors.Wrapf(err, "failed to enable application %q on pool %q. %s", appName, poolName, string(output))
 	}
 
 	return nil
@@ -327,7 +359,7 @@ func setCommonPoolProperties(context *clusterd.Context, clusterInfo *ClusterInfo
 
 		// Schedule snapshots
 		if pool.Mirroring.SnapshotSchedulesEnabled() {
-			err = enableSnapshotSchedules(context, clusterInfo, pool)
+			err = EnableSnapshotSchedules(context, clusterInfo, pool.Name, pool.Mirroring.SnapshotSchedules)
 			if err != nil {
 				return errors.Wrapf(err, "failed to enable snapshot scheduling for pool %q", pool.Name)
 			}
@@ -456,13 +488,22 @@ func createReplicatedPoolForApp(context *clusterd.Context, clusterInfo *ClusterI
 
 	if checkFailureDomain || pool.PoolSpec.DeviceClass != "" {
 		if err = updatePoolCrushRule(context, clusterInfo, clusterSpec, pool); err != nil {
-			return nil
+			return errors.Wrapf(err, "failed to update crush rule for pool %q", pool.Name)
 		}
 	}
 	return nil
 }
 
 func updatePoolCrushRule(context *clusterd.Context, clusterInfo *ClusterInfo, clusterSpec *cephv1.ClusterSpec, pool cephv1.NamedPoolSpec) error {
+	if !pool.EnableCrushUpdates {
+		logger.Debugf("Skipping crush rule update for pool %q: EnableCrushUpdates is disabled", pool.Name)
+		return nil
+	}
+	if clusterSpec.IsStretchCluster() {
+		logger.Debugf("skipping crush rule update for pool %q in a stretch cluster", pool.Name)
+		return nil
+	}
+
 	if pool.FailureDomain == "" && pool.DeviceClass == "" {
 		logger.Debugf("skipping check for failure domain and deviceClass on pool %q as it is not specified", pool.Name)
 		return nil
@@ -529,7 +570,15 @@ func extractPoolDetails(rule ruleSpec) (string, string) {
 			failureDomain = step.Type
 		}
 		if step.ItemName != "" {
-			deviceClass = step.ItemName
+			// we are not using crushRoot currently, remove it
+			// from crush rule
+			if strings.Contains(step.ItemName, "~") {
+				crushRootAndDeviceClass := step.ItemName
+				parts := strings.SplitN(crushRootAndDeviceClass, "~", 2)
+				deviceClass = parts[1]
+			} else {
+				deviceClass = step.ItemName
+			}
 		}
 		// We expect the rule to be found by the second step, or else it is a more
 		// complex rule that would not be supported for updating the failure domain
@@ -543,9 +592,9 @@ func extractPoolDetails(rule ruleSpec) (string, string) {
 func setCrushRule(context *clusterd.Context, clusterInfo *ClusterInfo, poolName, crushRule string) error {
 	args := []string{"osd", "pool", "set", poolName, "crush_rule", crushRule}
 
-	_, err := NewCephCommand(context, clusterInfo, args).Run()
+	output, err := NewCephCommand(context, clusterInfo, args).Run()
 	if err != nil {
-		return errors.Wrapf(err, "failed to set crush rule %q", crushRule)
+		return errors.Wrapf(err, "failed to set crush rule %q. %s", crushRule, string(output))
 	}
 	return nil
 }
@@ -613,7 +662,6 @@ func createHybridCrushRule(context *clusterd.Context, clusterInfo *ClusterInfo, 
 }
 
 func updateCrushMap(context *clusterd.Context, clusterInfo *ClusterInfo, ruleset string) error {
-
 	// Fetch the compiled crush map
 	compiledCRUSHMapFilePath, err := GetCompiledCrushMap(context, clusterInfo)
 	if err != nil {
@@ -640,7 +688,7 @@ func updateCrushMap(context *clusterd.Context, clusterInfo *ClusterInfo, ruleset
 	}()
 
 	// Append plain rule to the decompiled crush map
-	f, err := os.OpenFile(filepath.Clean(decompiledCRUSHMapFilePath), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0400)
+	f, err := os.OpenFile(filepath.Clean(decompiledCRUSHMapFilePath), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o400)
 	if err != nil {
 		return errors.Wrapf(err, "failed to open decompiled crush map %q", decompiledCRUSHMapFilePath)
 	}
@@ -696,9 +744,9 @@ func createReplicationCrushRule(context *clusterd.Context, clusterInfo *ClusterI
 		args = append(args, deviceClass)
 	}
 
-	_, err := NewCephCommand(context, clusterInfo, args).Run()
+	output, err := NewCephCommand(context, clusterInfo, args).Run()
 	if err != nil {
-		return errors.Wrapf(err, "failed to create crush rule %s", ruleName)
+		return errors.Wrapf(err, "failed to create crush rule %s. %s", ruleName, string(output))
 	}
 
 	return nil
@@ -708,9 +756,9 @@ func createReplicationCrushRule(context *clusterd.Context, clusterInfo *ClusterI
 func SetPoolProperty(context *clusterd.Context, clusterInfo *ClusterInfo, name, propName, propVal string) error {
 	args := []string{"osd", "pool", "set", name, propName, propVal}
 	logger.Infof("setting pool property %q to %q on pool %q", propName, propVal, name)
-	_, err := NewCephCommand(context, clusterInfo, args).Run()
+	output, err := NewCephCommand(context, clusterInfo, args).Run()
 	if err != nil {
-		return errors.Wrapf(err, "failed to set pool property %q on pool %q", propName, name)
+		return errors.Wrapf(err, "failed to set pool property %q on pool %q. %s", propName, name, string(output))
 	}
 	return nil
 }
@@ -719,9 +767,9 @@ func SetPoolProperty(context *clusterd.Context, clusterInfo *ClusterInfo, name, 
 func setPoolQuota(context *clusterd.Context, clusterInfo *ClusterInfo, poolName, quotaType, quotaVal string) error {
 	args := []string{"osd", "pool", "set-quota", poolName, quotaType, quotaVal}
 	logger.Infof("setting quota %q=%q on pool %q", quotaType, quotaVal, poolName)
-	_, err := NewCephCommand(context, clusterInfo, args).Run()
+	output, err := NewCephCommand(context, clusterInfo, args).Run()
 	if err != nil {
-		return errors.Wrapf(err, "failed to set %q quota on pool %q", quotaType, poolName)
+		return errors.Wrapf(err, "failed to set %q quota on pool %q. %s", quotaType, poolName, string(output))
 	}
 	return nil
 }
@@ -734,9 +782,9 @@ func SetPoolReplicatedSizeProperty(context *clusterd.Context, clusterInfo *Clust
 		args = append(args, "--yes-i-really-mean-it")
 	}
 
-	_, err := NewCephCommand(context, clusterInfo, args).Run()
+	output, err := NewCephCommand(context, clusterInfo, args).Run()
 	if err != nil {
-		return errors.Wrapf(err, "failed to set pool property %q on pool %q", propName, poolName)
+		return errors.Wrapf(err, "failed to set pool property %q on pool %q. %s", propName, poolName, string(output))
 	}
 
 	return nil

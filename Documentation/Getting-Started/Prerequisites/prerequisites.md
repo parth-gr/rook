@@ -7,7 +7,7 @@ and Rook is granted the required privileges (see below for more information).
 
 ## Kubernetes Version
 
-Kubernetes versions **v1.25** through **v1.29** are supported.
+Kubernetes versions **v1.28** through **v1.33** are supported.
 
 ## CPU Architecture
 
@@ -129,3 +129,11 @@ ConfigMap found in operator.yaml:
 * `CSI_CEPHFS_PLUGIN_VOLUME_MOUNT`
 * `CSI_RBD_PLUGIN_VOLUME`
 * `CSI_RBD_PLUGIN_VOLUME_MOUNT`
+
+If using containerd, remove `LimitNOFILE` from containerd service config to avoid issues like slow ceph commands or mons falling out of quorum.
+
+```nix
+systemd.services.containerd.serviceConfig = {
+  LimitNOFILE = lib.mkForce null;
+};
+```

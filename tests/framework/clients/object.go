@@ -40,10 +40,10 @@ func CreateObjectOperation(k8sh *utils.K8sHelper, manifests installer.CephManife
 }
 
 // ObjectCreate Function to create a object store in rook
-func (o *ObjectOperation) Create(namespace, storeName string, replicaCount int32, tlsEnable bool) error {
-
+func (o *ObjectOperation) Create(namespace, storeName string, replicaCount int32, tlsEnable bool, swiftAndKeystone bool) error {
 	logger.Info("creating the object store via CRD")
-	if err := o.k8sh.ResourceOperation("apply", o.manifests.GetObjectStore(storeName, int(replicaCount), rgwPort, tlsEnable)); err != nil {
+
+	if err := o.k8sh.ResourceOperation("apply", o.manifests.GetObjectStore(storeName, int(replicaCount), rgwPort, tlsEnable, swiftAndKeystone)); err != nil {
 		return err
 	}
 
@@ -58,7 +58,6 @@ func (o *ObjectOperation) Create(namespace, storeName string, replicaCount int32
 }
 
 func (o *ObjectOperation) Delete(namespace, storeName string) error {
-
 	logger.Infof("Deleting the object store via CRD")
 	if err := o.k8sh.DeleteResource("-n", namespace, "CephObjectStore", storeName); err != nil {
 		return err
@@ -75,7 +74,7 @@ func (o *ObjectOperation) GetEndPointUrl(namespace string, storeName string) (st
 	args := []string{"get", "svc", "-n", namespace, "-l", fmt.Sprintf("rgw=%s", storeName), "-o", "jsonpath={.items[*].spec.clusterIP}"}
 	EndPointUrl, err := o.k8sh.Kubectl(args...)
 	if err != nil {
-		return "", fmt.Errorf("Unable to find rgw end point-- %s", err)
+		return "", fmt.Errorf("unable to find rgw end point-- %s", err)
 	}
 	return fmt.Sprintf("%s:%d", EndPointUrl, rgwPort), nil
 }

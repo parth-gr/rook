@@ -142,7 +142,7 @@ const (
 	dummyVersionsRaw          = `
 	{
 		"mon": {
-			"ceph version 17.2.1 (000000000000000000000000000000) quincy (stable)": 3
+			"ceph version 19.2.1 (000000000000000000000000000000) squid (stable)": 3
 		}
 	}`
 )
@@ -165,8 +165,9 @@ func TestCephFilesystemController(t *testing.T) {
 	// A Pool resource with metadata and spec.
 	fs := &cephv1.CephFilesystem{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
+			Name:       name,
+			Namespace:  namespace,
+			Finalizers: []string{"cephfilesystem.ceph.rook.io"},
 		},
 		Spec: cephv1.FilesystemSpec{
 			MetadataServer: cephv1.MetadataServerSpec{
@@ -254,6 +255,7 @@ func TestCephFilesystemController(t *testing.T) {
 			recorder:         record.NewFakeRecorder(5),
 			scheme:           s,
 			context:          c,
+			fsContexts:       make(map[string]*fsHealth),
 			opManagerContext: context.TODO(),
 		}
 		res, err := r.Reconcile(ctx, req)

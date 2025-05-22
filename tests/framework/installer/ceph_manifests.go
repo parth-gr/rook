@@ -30,6 +30,7 @@ type CephManifests interface {
 	Settings() *TestCephSettings
 	GetCRDs(k8shelper *utils.K8sHelper) string
 	GetCSINFSRBAC() string
+	GetCSIOperator() string
 	GetOperator() string
 	GetCommon() string
 	GetCommonExternal() string
@@ -47,7 +48,7 @@ type CephManifests interface {
 	GetNFS(name string, daemonCount int) string
 	GetNFSPool() string
 	GetRBDMirror(name string, daemonCount int) string
-	GetObjectStore(name string, replicaCount, port int, tlsEnable bool) string
+	GetObjectStore(name string, replicaCount, port int, tlsEnable bool, swiftAndKeystone bool) string
 	GetObjectStoreUser(name, displayName, store, usercaps, maxsize string, maxbuckets, maxobjects int) string
 	GetBucketStorageClass(storeName, storageClassName, reclaimPolicy string) string
 	GetOBC(obcName, storageClassName, bucketName string, maxObject string, createBucket bool) string
@@ -71,7 +72,7 @@ func NewCephManifests(settings *TestCephSettings) CephManifests {
 	switch settings.RookVersion {
 	case LocalBuildTag:
 		return &CephManifestsMaster{settings}
-	case Version1_13:
+	case Version1_16:
 		return &CephManifestsPreviousVersion{settings, &CephManifestsMaster{settings}}
 	}
 	panic(fmt.Errorf("unrecognized ceph manifest version: %s", settings.RookVersion))
@@ -97,6 +98,11 @@ func (m *CephManifestsMaster) GetOperator() string {
 		manifest = m.settings.readManifest("operator.yaml")
 	}
 	return m.settings.replaceOperatorSettings(manifest)
+}
+
+func (m *CephManifestsMaster) GetCSIOperator() string {
+	manifest := m.settings.readManifest("csi-operator.yaml")
+	return m.settings.replaceCSIOperatorSettings(m.settings.OperatorNamespace, manifest)
 }
 
 func (m *CephManifestsMaster) GetCommonExternal() string {
@@ -183,7 +189,10 @@ spec:
   disruptionManagement:
     managePodBudgets: true
     osdMaintenanceTimeout: 30
-    pgHealthCheckTimeout: 0
+  cephConfig:
+    global:
+      mon_data_avail_warn: "10"
+      rgw_allow_notification_secrets_in_cleartext: "true"
   healthCheck:
     daemonHealth:
       mon:
@@ -237,6 +246,9 @@ spec:
     deviceFilter:  ` + getDeviceFilter() + `
     config:
       databaseSizeMB: "1024"
+    fullRatio: 0.96
+    backfillFullRatio: 0.91
+    nearFullRatio: 0.88
 `
 	}
 
@@ -461,35 +473,30 @@ spec:
     requireSafeReplicaSize: false`
 }
 
-func (m *CephManifestsMaster) GetObjectStore(name string, replicaCount, port int, tlsEnable bool) string {
-	if tlsEnable {
-		return `apiVersion: ceph.rook.io/v1
-kind: CephObjectStore
-metadata:
-  name: ` + name + `
-  namespace: ` + m.settings.Namespace + `
-spec:
-  metadataPool:
-    replicated:
-      size: 1
-      requireSafeReplicaSize: false
-    compressionMode: passive
-  dataPool:
-    replicated:
-      size: 1
-      requireSafeReplicaSize: false
-  gateway:
-    resources: null
-    securePort: ` + strconv.Itoa(port) + `
-    instances: ` + strconv.Itoa(replicaCount) + `
-    sslCertificateRef: ` + name + `
-`
+func (m *CephManifestsMaster) GetObjectStore(name string, replicaCount, port int, tlsEnable bool, swiftAndKeystone bool) string {
+	type Spec struct {
+		Name             string
+		TLS              bool
+		Port             int
+		ReplicaCount     int
+		SwiftAndKeystone bool
+		Manifests        *CephManifestsMaster
 	}
-	return `apiVersion: ceph.rook.io/v1
+
+	spec := Spec{
+		Name:             name,
+		TLS:              tlsEnable,
+		ReplicaCount:     replicaCount,
+		Port:             port,
+		SwiftAndKeystone: swiftAndKeystone,
+		Manifests:        m,
+	}
+
+	tmpl := `apiVersion: ceph.rook.io/v1
 kind: CephObjectStore
 metadata:
-  name: ` + name + `
-  namespace: ` + m.settings.Namespace + `
+  name: {{ .Name }}
+  namespace: {{ .Manifests.Settings.Namespace }}
 spec:
   metadataPool:
     replicated:
@@ -500,11 +507,36 @@ spec:
     replicated:
       size: 1
       requireSafeReplicaSize: false
+  {{ if .SwiftAndKeystone }}
+  auth:
+    keystone:
+      acceptedRoles:
+        - admin
+        - member
+        - service
+      implicitTenants: "true"
+      revocationInterval: 1200
+      serviceUserSecretName: usersecret
+      tokenCacheSize: 1000
+      url: https://keystone.{{ .Manifests.Settings.Namespace }}.svc/
+  protocols:
+    swift:
+      accountInUrl: false
+      urlPrefix: foobar
+    s3:
+      enabled: true
+      authUseKeystone: true
+  {{ end }}
   gateway:
     resources: null
-    port: ` + strconv.Itoa(port) + `
-    instances: ` + strconv.Itoa(replicaCount) + `
-`
+    {{ if .TLS }}securePort: {{ .Port }}{{ else }}port: {{ .Port }}{{ end }}
+    instances: {{ .ReplicaCount }}
+    {{ if .SwiftAndKeystone }}
+    caBundleRef: keystone-bundle
+    {{ end }}
+    {{ if .TLS }}sslCertificateRef: {{ .Name }}{{ end }}`
+
+	return renderTemplate(tmpl, spec)
 }
 
 func (m *CephManifestsMaster) GetObjectStoreUser(name, displayName, store, usercaps, maxsize string, maxbuckets, maxobjects int) string {
@@ -652,7 +684,9 @@ metadata:
   name: ` + groupName + `
   namespace: ` + m.settings.Namespace + `
 spec:
-  filesystemName: ` + fsName
+  filesystemName: ` + fsName + `
+  quota: 10G
+  dataPoolName: ` + fsName + "-data0"
 }
 
 func (m *CephManifestsMaster) GetCOSIDriver() string {
@@ -672,7 +706,7 @@ kind: BucketClass
 metadata:
   name: ` + name + `
   namespace: ` + m.settings.OperatorNamespace + `
-driverName: ceph.objectstorage.k8s.io
+driverName: ` + cosi.CephCOSIDriverPrefix + `.ceph.objectstorage.k8s.io
 deletionPolicy: ` + deletionPolicy + `
 parameters:
   objectStoreUserSecretName:  ` + objectStoreUserSecretName + `

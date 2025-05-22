@@ -57,6 +57,8 @@ func (h *CephInstaller) configureRookOperatorViaHelm(upgrade bool) error {
 		"enableDiscoveryDaemon": h.settings.EnableDiscovery,
 		"image":                 map[string]interface{}{"tag": h.settings.RookVersion},
 		"monitoring":            map[string]interface{}{"enabled": true},
+		"revisionHistoryLimit":  "3",
+		"enforceHostNetwork":    "false",
 	}
 	values["csi"] = map[string]interface{}{
 		"csiRBDProvisionerResource":    nil,
@@ -88,9 +90,11 @@ func (h *CephInstaller) configureRookOperatorViaHelm(upgrade bool) error {
 func (h *CephInstaller) CreateRookCephClusterViaHelm() error {
 	return h.configureRookCephClusterViaHelm(false)
 }
+
 func (h *CephInstaller) UpgradeRookCephClusterViaHelm() error {
 	return h.configureRookCephClusterViaHelm(true)
 }
+
 func (h *CephInstaller) configureRookCephClusterViaHelm(upgrade bool) error {
 	values := map[string]interface{}{
 		"image": "rook/ceph:" + h.settings.RookVersion,
@@ -282,7 +286,7 @@ func (h *CephInstaller) CreateFileSystemConfiguration(values map[string]interfac
 
 // CreateObjectStoreConfiguration creates an object store configuration
 func (h *CephInstaller) CreateObjectStoreConfiguration(values map[string]interface{}, name, scName string) error {
-	testObjectStoreBytes := []byte(h.Manifests.GetObjectStore(name, 2, 8080, false))
+	testObjectStoreBytes := []byte(h.Manifests.GetObjectStore(name, 2, 8080, false, false))
 	var testObjectStoreCRD map[string]interface{}
 	if err := yaml.Unmarshal(testObjectStoreBytes, &testObjectStoreCRD); err != nil {
 		return err

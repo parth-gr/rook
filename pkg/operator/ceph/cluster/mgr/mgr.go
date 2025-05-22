@@ -42,18 +42,18 @@ import (
 var logger = capnslog.NewPackageLogger("github.com/rook/rook", "op-mgr")
 
 const (
-	AppName              = "rook-ceph-mgr"
-	serviceAccountName   = "rook-ceph-mgr"
-	PrometheusModuleName = "prometheus"
-	crashModuleName      = "crash"
-	balancerModuleName   = "balancer"
-	balancerModuleMode   = "upmap"
-	mgrRoleLabelName     = "mgr_role"
-	activeMgrStatus      = "active"
-	standbyMgrStatus     = "standby"
-	monitoringPath       = "/etc/ceph-monitoring/"
-	serviceMonitorFile   = "service-monitor.yaml"
-	serviceMonitorPort   = "http-metrics"
+	AppName                   = "rook-ceph-mgr"
+	serviceAccountName        = "rook-ceph-mgr"
+	PrometheusModuleName      = "prometheus"
+	crashModuleName           = "crash"
+	balancerModuleName        = "balancer"
+	defaultBalancerModuleMode = "upmap"
+	mgrRoleLabelName          = "mgr_role"
+	activeMgrStatus           = "active"
+	standbyMgrStatus          = "standby"
+	monitoringPath            = "/etc/ceph-monitoring/"
+	serviceMonitorFile        = "service-monitor.yaml"
+	serviceMonitorPort        = "http-metrics"
 	// minimum amount of memory in MB to run the pod
 	cephMgrPodMinimumMemory uint64 = 512
 	// DefaultMetricsPort prometheus exporter port
@@ -80,8 +80,10 @@ func New(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo, spec ce
 	}
 }
 
-var waitForDeploymentToStart = k8sutil.WaitForDeploymentToStart
-var updateDeploymentAndWait = mon.UpdateCephDeploymentAndWait
+var (
+	waitForDeploymentToStart = k8sutil.WaitForDeploymentToStart
+	updateDeploymentAndWait  = mon.UpdateCephDeploymentAndWait
+)
 
 // for backward compatibility, default to 1 mgr
 func (c *Cluster) getReplicas() int {
@@ -248,55 +250,54 @@ func (c *Cluster) removeExtraMgrs(daemonIDs []string) {
 	}
 }
 
-// UpdateActiveMgrLabel updates the mgr_role label value to either
-// active or standby depending on the status of the ceph mgr running
-// in the pod
-func (c *Cluster) UpdateActiveMgrLabel(daemonNameToUpdate string, prevActiveMgr string) (string, error) {
-
-	logger.Infof("Checking mgr_role label value of daemon %s (prev active mgr was %s)", daemonNameToUpdate, prevActiveMgr)
-	currActiveMgr, err := c.getActiveMgr()
-	if err != nil || currActiveMgr == "" {
-		logger.Infof("cannot update active mgr, no active mgr found. err=%v", err)
-		return "", err
-	} else if prevActiveMgr == currActiveMgr {
-		logger.Infof("active mgr is still the same (%s). No need to update mgr_role label on daemon %s.", currActiveMgr, daemonNameToUpdate)
-		return currActiveMgr, err
-	}
-
+// SetMgrRoleLabel sets 'mgr_role: active' label to given manager daemon pods if isActive is true.
+// Otherwise sets 'mgr_role: standby' label to manager pods.
+func (c *Cluster) SetMgrRoleLabel(daemonNameToUpdate string, isActive bool) error {
 	pods, err := c.context.Clientset.CoreV1().Pods(c.clusterInfo.Namespace).List(c.clusterInfo.Context, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("mgr=%s", daemonNameToUpdate),
+		LabelSelector: fmt.Sprintf("%s=%s,%s=%s", k8sutil.AppAttr, AppName, controller.DaemonIDLabel, daemonNameToUpdate),
 	})
 	if err != nil {
 		logger.Infof("cannot get pod for mgr daemon %s", daemonNameToUpdate)
-		return "", err // force mrg_role update in the next call
+		return err // force mrg_role update in the next call
 	}
 
+	newMgrRole := standbyMgrStatus
+	if isActive {
+		newMgrRole = activeMgrStatus
+	}
+	// Normally, there should only be one mgr pod with the specific name daemonNameToUpdate. However,
+	// during transitions, there might be additional mgr pods shutting down. To handle this, the code
+	// updates the label mgrRoleLabelName on all mgr pods. If this update fails, the system rolls back
+	// the currently active manager (currActiveMgr). This way the next call will retry the update.
+	var podLabelUpdErr error
 	for i, pod := range pods.Items {
-
 		labels := pod.GetLabels()
-		cephDaemonId := labels[controller.DaemonIDLabel]
-		newMgrRole := standbyMgrStatus
-		if currActiveMgr == cephDaemonId {
-			newMgrRole = activeMgrStatus
-		}
-
 		currMgrRole, mgrHasLabel := labels[mgrRoleLabelName]
 		if !mgrHasLabel || currMgrRole != newMgrRole {
-
-			logger.Infof("updating mgr_role label value of daemon %s to '%s'. New active mgr is %s.", daemonNameToUpdate, newMgrRole, currActiveMgr)
+			logger.Infof("updating mgr_role label value of daemon %s to '%s'. New active mgr is %s.", daemonNameToUpdate, newMgrRole, daemonNameToUpdate)
 			labels[mgrRoleLabelName] = newMgrRole
 			pod.SetLabels(labels)
 			_, err = c.context.Clientset.CoreV1().Pods(c.clusterInfo.Namespace).Update(c.clusterInfo.Context, &pods.Items[i], metav1.UpdateOptions{})
 			if err != nil {
-				logger.Infof("cannot update the active mgr pod %q. err=%v", pods.Items[i].Name, err)
+				// don't return error from here. First try to update all pods from the list and reconcile services.
+				// return error later to update pods on next reconcile.
+				podLabelUpdErr = fmt.Errorf("cannot update the active mgr pod %q. err=%w", pods.Items[i].Name, err)
 			}
 		}
 	}
 
-	return currActiveMgr, c.reconcileServices()
+	err = c.reconcileServices()
+	if err != nil {
+		return fmt.Errorf("unable to reconcile services: %w", err)
+	}
+	if podLabelUpdErr != nil {
+		return podLabelUpdErr
+	}
+
+	return nil
 }
 
-func (c *Cluster) getActiveMgr() (string, error) {
+func (c *Cluster) GetActiveMgr() (string, error) {
 	mgrStat, err := cephclient.CephMgrStat(c.context, c.clusterInfo)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to get mgr stat for the active mgr")
@@ -306,7 +307,6 @@ func (c *Cluster) getActiveMgr() (string, error) {
 
 // reconcile the services,
 func (c *Cluster) reconcileServices() error {
-
 	if err := c.configureDashboardService(); err != nil {
 		return errors.Wrap(err, "failed to configure dashboard svc")
 	}
@@ -323,7 +323,9 @@ func (c *Cluster) reconcileServices() error {
 	// enable monitoring if `monitoring: enabled: true`
 	if c.spec.Monitoring.Enabled {
 		if err := c.EnableServiceMonitor(); err != nil {
-			return errors.Wrap(err, "failed to enable service monitor")
+			// We don't want to return an error to block the cluster reconcile
+			// since monitoring is an optional service.
+			logger.Errorf("failed to enable service monitor, prometheus may need to be installed. %v", err)
 		}
 	}
 
@@ -454,7 +456,6 @@ func (c *Cluster) restartMgrModule(name string) error {
 }
 
 func (c *Cluster) enableBalancerModule() error {
-
 	// This turns "on" the balancer
 	err := cephclient.MgrEnableModule(c.context, c.clusterInfo, balancerModuleName, false)
 	if err != nil {
@@ -480,8 +481,12 @@ func (c *Cluster) configureMgrModules() error {
 
 		if module.Enabled {
 			if module.Name == balancerModuleName {
+				mode := module.Settings.BalancerMode
+				if mode == "" {
+					mode = defaultBalancerModuleMode
+				}
 				// Configure balancer module mode
-				err := cephclient.ConfigureBalancerModule(c.context, c.clusterInfo, balancerModuleMode)
+				err := cephclient.ConfigureBalancerModule(c.context, c.clusterInfo, mode)
 				if err != nil {
 					return errors.Wrapf(err, "failed to configure module %q", module.Name)
 				}
@@ -574,10 +579,10 @@ func applyMonitoringLabels(c *Cluster, serviceMonitor *monitoringv1.ServiceMonit
 			if managedBy, ok := monitoringLabels["rook.io/managedBy"]; ok {
 				relabelConfig := monitoringv1.RelabelConfig{
 					TargetLabel: "managedBy",
-					Replacement: managedBy,
+					Replacement: &managedBy,
 				}
 				serviceMonitor.Spec.Endpoints[0].RelabelConfigs = append(
-					serviceMonitor.Spec.Endpoints[0].RelabelConfigs, &relabelConfig)
+					serviceMonitor.Spec.Endpoints[0].RelabelConfigs, relabelConfig)
 			} else {
 				logger.Info("rook.io/managedBy not specified in monitoring labels")
 			}

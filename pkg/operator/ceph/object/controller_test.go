@@ -18,18 +18,12 @@ limitations under the License.
 package object
 
 import (
-	"bytes"
 	"context"
-	"io"
-	"net/http"
 	"os"
 	"reflect"
 	"testing"
 	"time"
 
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-
-	"github.com/ceph/go-ceph/rgw/admin"
 	"github.com/coreos/pkg/capnslog"
 	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
@@ -46,6 +40,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -149,7 +144,7 @@ const (
 	dummyVersionsRaw          = `
 	{
 		"mon": {
-			"ceph version 17.2.1 (0000000000000000) quincy (stable)": 3
+			"ceph version 19.2.1 (0000000000000000) squid (stable)": 3
 		}
 	}`
 	//nolint:gosec // only test values, not a real secret
@@ -325,35 +320,6 @@ var (
 	store     = "my-store"
 )
 
-var mockMultisiteAdminOpsCtxFunc = func(objContext *Context, spec *cephv1.ObjectStoreSpec) (*AdminOpsContext, error) {
-	mockClient := &MockClient{
-		MockDo: func(req *http.Request) (*http.Response, error) {
-			if req.Method == http.MethodGet || req.Method == http.MethodPut {
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       io.NopCloser(bytes.NewReader([]byte(userCreateJSON))),
-				}, nil
-			}
-			if req.Method == http.MethodDelete {
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       io.NopCloser(bytes.NewReader([]byte(""))),
-				}, nil
-			}
-			return nil, errors.Errorf("unexpected method %q", req.Method)
-		},
-	}
-	context := NewContext(objContext.Context, objContext.clusterInfo, store)
-	adminClient, _ := admin.New("rook-ceph-rgw-my-store.mycluster.svc", "53S6B9S809NUP19IJ2K3", "1bXPegzsGClvoGAiJdHQD1uOW2sQBLAZM9j9VtXR", mockClient)
-
-	return &AdminOpsContext{
-		Context:               *context,
-		AdminOpsUserAccessKey: "EOE7FYCNOBZJ5VFV909G",
-		AdminOpsUserSecretKey: "qmIqpWm8HxCzmynCrD6U6vKWi4hnDBndOnmxXNsV", // notsecret
-		AdminOpsClient:        adminClient,
-	}, nil
-}
-
 func TestCephObjectStoreController(t *testing.T) {
 	ctx := context.TODO()
 	// Set DEBUG logging
@@ -370,13 +336,6 @@ func TestCephObjectStoreController(t *testing.T) {
 		return nil
 	}
 
-	// overwrite adminops context func
-	oldNewMultisiteAdminOpsCtxFunc := newMultisiteAdminOpsCtxFunc
-	newMultisiteAdminOpsCtxFunc = mockMultisiteAdminOpsCtxFunc
-	defer func() {
-		newMultisiteAdminOpsCtxFunc = oldNewMultisiteAdminOpsCtxFunc
-	}()
-
 	setupNewEnvironment := func(additionalObjects ...runtime.Object) *ReconcileCephObjectStore {
 		// reset var we use to check if we have called to commit config changes
 		calledCommitConfigChanges = false
@@ -384,8 +343,9 @@ func TestCephObjectStoreController(t *testing.T) {
 		// A Pool resource with metadata and spec.
 		objectStore := &cephv1.CephObjectStore{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      store,
-				Namespace: namespace,
+				Name:       store,
+				Namespace:  namespace,
+				Finalizers: []string{"cephobjectstore.ceph.rook.io"},
 			},
 			Spec:     cephv1.ObjectStoreSpec{MetadataPool: cephv1.PoolSpec{Replicated: cephv1.ReplicatedSpec{Size: 1}}, DataPool: cephv1.PoolSpec{Replicated: cephv1.ReplicatedSpec{Size: 1}}},
 			TypeMeta: controllerTypeMeta,
@@ -418,11 +378,9 @@ func TestCephObjectStoreController(t *testing.T) {
 		s := scheme.Scheme
 		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephObjectStore{})
 		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephCluster{})
-		s.AddKnownTypes(v1.SchemeGroupVersion, &v1.Secret{})
 
 		// Create a fake client to mock API calls.
 		cl := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objects...).Build()
-
 		// Create a ReconcileCephObjectStore object with the scheme and fake client.
 		r := &ReconcileCephObjectStore{
 			client:           cl,
@@ -675,8 +633,9 @@ func TestCephObjectStoreControllerMultisite(t *testing.T) {
 
 	objectStore := &cephv1.CephObjectStore{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      store,
-			Namespace: namespace,
+			Name:       store,
+			Namespace:  namespace,
+			Finalizers: []string{"cephobjectstore.ceph.rook.io"},
 		},
 		TypeMeta: metav1.TypeMeta{
 			Kind: "CephObjectStore",
@@ -738,12 +697,7 @@ func TestCephObjectStoreControllerMultisite(t *testing.T) {
 
 	commitConfigChangesOrig := commitConfigChanges
 	defer func() { commitConfigChanges = commitConfigChangesOrig }()
-	// overwrite adminops context func
-	oldNewMultisiteAdminOpsCtxFunc := newMultisiteAdminOpsCtxFunc
-	newMultisiteAdminOpsCtxFunc = mockMultisiteAdminOpsCtxFunc
-	defer func() {
-		newMultisiteAdminOpsCtxFunc = oldNewMultisiteAdminOpsCtxFunc
-	}()
+
 	// make sure joining multisite calls to commit config changes
 	calledCommitConfigChanges := false
 	commitConfigChanges = func(c *Context) error {
@@ -766,7 +720,7 @@ func TestCephObjectStoreControllerMultisite(t *testing.T) {
 	// Register operator types with the runtime scheme.
 	s := scheme.Scheme
 	s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephObjectZone{}, &cephv1.CephObjectZoneList{}, &cephv1.CephCluster{}, &cephv1.CephClusterList{}, &cephv1.CephObjectStore{}, &cephv1.CephObjectStoreList{})
-	s.AddKnownTypes(v1.SchemeGroupVersion, &v1.Secret{})
+
 	// Create a fake client to mock API calls.
 	cl := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(object...).Build()
 
@@ -971,13 +925,6 @@ func TestCephObjectExternalStoreController(t *testing.T) {
 			rgwAdminOpsUserSecret,
 		}
 
-		// overwrite adminops context func
-		oldNewMultisiteAdminOpsCtxFunc := newMultisiteAdminOpsCtxFunc
-		newMultisiteAdminOpsCtxFunc = mockMultisiteAdminOpsCtxFunc
-		defer func() {
-			newMultisiteAdminOpsCtxFunc = oldNewMultisiteAdminOpsCtxFunc
-		}()
-
 		r := getReconciler(objects)
 
 		t.Run("create an external object store", func(t *testing.T) {
@@ -1049,22 +996,22 @@ func TestDiffVersions(t *testing.T) {
 			if args[0] == "versions" {
 				return `{
     "mon": {
-        "ceph version 17.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) quincy (dev)": 3
+        "ceph version 19.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) squid (dev)": 3
     },
     "mgr": {
-        "ceph version 17.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) quincy (dev)": 1
+        "ceph version 19.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) squid (dev)": 1
     },
     "osd": {
-        "ceph version 17.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) quincy (dev)": 3
+        "ceph version 19.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) squid (dev)": 3
     },
     "mds": {
-        "ceph version 17.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) quincy (dev)": 2
+        "ceph version 19.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) squid (dev)": 2
     },
     "rgw": {
-        "ceph version 17.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) quincy (dev)": 1
+        "ceph version 19.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) squid (dev)": 1
     },
     "overall": {
-        "ceph version 17.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) quincy (dev)": 10
+        "ceph version 19.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) squid (dev)": 10
     }
 }`, nil
 			}
@@ -1074,7 +1021,7 @@ func TestDiffVersions(t *testing.T) {
 	c := &clusterd.Context{Executor: executor}
 
 	// desiredCephVersion comes from DetectCephVersion() (ceph --version) which uses ExtractCephVersion()
-	desiredCephVersion, err := cephver.ExtractCephVersion("ceph version 17.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) quincy (dev)")
+	desiredCephVersion, err := cephver.ExtractCephVersion("ceph version 19.0.0-9718-g4ff72306 (4ff723061fc15c803dcf6556d02f56bdf56de5fa) squid (dev)")
 	assert.NoError(t, err)
 
 	// runningCephVersion comes from LeastUptodateDaemonVersion()
@@ -1086,4 +1033,113 @@ func TestDiffVersions(t *testing.T) {
 
 	// Compares the actual value of the pointer by dereferencing the pointer
 	assert.True(t, reflect.DeepEqual(runningCephVersion, *desiredCephVersion))
+}
+
+func Test_mapSecretToCR(t *testing.T) {
+	t.Run("secret not referenced", func(t *testing.T) {
+		// create fake k8s cliend and add CephObjectStore objects
+		var objects []runtime.Object
+		o := simpleStore()
+		o.Namespace = "ns"
+		o.Name = "store1"
+		objects = append(objects, o)
+		s := scheme.Scheme
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephObjectStore{})
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephObjectStoreList{})
+		cl := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objects...).Build()
+		mapFunc := mapSecretToCR(cl)
+		got := mapFunc(context.TODO(), &v1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secret",
+				Namespace: "ns",
+			},
+		})
+		assert.Empty(t, got, "expected empty list")
+	})
+	t.Run("secret referenced in rgw config", func(t *testing.T) {
+		// create fake k8s cliend and add CephObjectStore objects
+		var objects []runtime.Object
+		otherStore := simpleStore()
+		otherStore.Namespace = "ns"
+		otherStore.Name = "store1"
+		inConf := simpleStore()
+		inConf.Namespace = "ns"
+		inConf.Name = "store2"
+		inConf.Spec.Gateway.RgwConfigFromSecret = map[string]v1.SecretKeySelector{
+			"rgw": {Key: "key", LocalObjectReference: v1.LocalObjectReference{Name: "secret"}},
+		}
+		objects = append(objects, otherStore, inConf)
+		s := scheme.Scheme
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephObjectStore{})
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephObjectStoreList{})
+		cl := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objects...).Build()
+		mapFunc := mapSecretToCR(cl)
+		got := mapFunc(context.TODO(), &v1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secret",
+				Namespace: "ns",
+			},
+		})
+		assert.Len(t, got, 1, "expected 1 item")
+		assert.Equal(t, "store2", got[0].Name, "expected store2")
+
+		got = mapFunc(context.TODO(), &v1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secret-other",
+				Namespace: "ns",
+			},
+		})
+		assert.Empty(t, got, "empty: wrong secret name")
+
+		got = mapFunc(context.TODO(), &v1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secret",
+				Namespace: "ns-other",
+			},
+		})
+		assert.Empty(t, got, "empty: wrong secret ns")
+	})
+	t.Run("secret referenced in keystone config", func(t *testing.T) {
+		// create fake k8s cliend and add CephObjectStore objects
+		var objects []runtime.Object
+		otherStore := simpleStore()
+		otherStore.Namespace = "ns"
+		otherStore.Name = "store1"
+		inConf := simpleStore()
+		inConf.Namespace = "ns"
+		inConf.Name = "store2"
+		inConf.Spec.Auth.Keystone = &cephv1.KeystoneSpec{
+			ServiceUserSecretName: "secret",
+		}
+		objects = append(objects, otherStore, inConf)
+		s := scheme.Scheme
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephObjectStore{})
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephObjectStoreList{})
+		cl := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objects...).Build()
+		mapFunc := mapSecretToCR(cl)
+		got := mapFunc(context.TODO(), &v1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secret",
+				Namespace: "ns",
+			},
+		})
+		assert.Len(t, got, 1, "expected 1 item")
+		assert.Equal(t, "store2", got[0].Name, "expected store2")
+
+		got = mapFunc(context.TODO(), &v1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secret-other",
+				Namespace: "ns",
+			},
+		})
+		assert.Empty(t, got, "empty: wrong secret name")
+
+		got = mapFunc(context.TODO(), &v1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secret",
+				Namespace: "ns-other",
+			},
+		})
+		assert.Empty(t, got, "empty: wrong secret ns")
+	})
 }

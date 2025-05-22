@@ -88,7 +88,7 @@ func (c *createConfig) createNewOSDsFromStatus(
 		return
 	}
 
-	for _, osd := range status.OSDs {
+	for i, osd := range status.OSDs {
 		if c.deployments.Exists(osd.ID) {
 			// This OSD will be handled by the updater
 			logger.Debugf("not creating deployment for OSD %d which already exists", osd.ID)
@@ -96,13 +96,13 @@ func (c *createConfig) createNewOSDsFromStatus(
 		}
 		if status.PvcBackedOSD {
 			logger.Infof("creating OSD %d on PVC %q", osd.ID, nodeOrPVCName)
-			err := createDaemonOnPVCFunc(c.cluster, osd, nodeOrPVCName, c.provisionConfig)
+			err := createDaemonOnPVCFunc(c.cluster, &status.OSDs[i], nodeOrPVCName, c.provisionConfig)
 			if err != nil {
 				errs.addError("%v", errors.Wrapf(err, "failed to create OSD %d on PVC %q", osd.ID, nodeOrPVCName))
 			}
 		} else {
 			logger.Infof("creating OSD %d on node %q", osd.ID, nodeOrPVCName)
-			err := createDaemonOnNodeFunc(c.cluster, osd, nodeOrPVCName, c.provisionConfig)
+			err := createDaemonOnNodeFunc(c.cluster, &status.OSDs[i], nodeOrPVCName, c.provisionConfig)
 			if err != nil {
 				errs.addError("%v", errors.Wrapf(err, "failed to create OSD %d on node %q", osd.ID, nodeOrPVCName))
 			}
@@ -187,9 +187,9 @@ func (c *Cluster) startProvisioningOverPVCs(config *provisionConfig, errs *provi
 		}
 
 		// Allow updating OSD prepare pod if the OSD needs migration
-		if c.replaceOSD != nil {
-			if strings.Contains(c.replaceOSD.Path, dataSource.ClaimName) {
-				logger.Infof("updating OSD prepare pod to replace OSD.%d", c.replaceOSD.ID)
+		if c.migrateOSD != nil {
+			if strings.Contains(c.migrateOSD.BlockPath, dataSource.ClaimName) {
+				logger.Infof("updating OSD prepare pod to replace OSD.%d", c.migrateOSD.ID)
 				skipPreparePod = false
 			}
 		}
@@ -203,8 +203,7 @@ func (c *Cluster) startProvisioningOverPVCs(config *provisionConfig, errs *provi
 			// create encryption Kubernetes Secret if the PVC is encrypted
 			key, err := GenerateDmCryptKey()
 			if err != nil {
-				errMsg := fmt.Sprintf("failed to generate dmcrypt key for osd claim %q. %v", osdProps.pvc.ClaimName, err)
-				errs.addError(errMsg)
+				errs.addError("failed to generate dmcrypt key for osd claim %q. %v", osdProps.pvc.ClaimName, err)
 				continue
 			}
 
@@ -216,8 +215,7 @@ func (c *Cluster) startProvisioningOverPVCs(config *provisionConfig, errs *provi
 			if c.spec.Security.KeyManagementService.IsTokenAuthEnabled() && c.spec.Security.KeyManagementService.IsVaultKMS() {
 				err := kms.SetTokenToEnvVar(c.clusterInfo.Context, c.context, c.spec.Security.KeyManagementService.TokenSecretName, kmsConfig.Provider, c.clusterInfo.Namespace)
 				if err != nil {
-					errMsg := fmt.Sprintf("failed to fetch kms token secret %q. %v", c.spec.Security.KeyManagementService.TokenSecretName, err)
-					errs.addError(errMsg)
+					errs.addError("failed to fetch kms token secret %q. %v", c.spec.Security.KeyManagementService.TokenSecretName, err)
 					continue
 				}
 			}
@@ -227,8 +225,7 @@ func (c *Cluster) startProvisioningOverPVCs(config *provisionConfig, errs *provi
 			// no risk of overwriting an existing key.
 			err = kmsConfig.PutSecret(osdProps.pvc.ClaimName, key)
 			if err != nil {
-				errMsg := fmt.Sprintf("failed to store secret. %v", err)
-				errs.addError(errMsg)
+				errs.addError("failed to store secret. %v", err)
 				continue
 			}
 		}
@@ -372,7 +369,7 @@ func (c *Cluster) runPrepareJob(osdProps *osdProperties, config *provisionConfig
 	return nil
 }
 
-func createDaemonOnPVC(c *Cluster, osd OSDInfo, pvcName string, config *provisionConfig) error {
+func createDaemonOnPVC(c *Cluster, osd *OSDInfo, pvcName string, config *provisionConfig) error {
 	d, err := deploymentOnPVC(c, osd, pvcName, config)
 	if err != nil {
 		return err
@@ -402,7 +399,7 @@ func createDaemonOnPVC(c *Cluster, osd OSDInfo, pvcName string, config *provisio
 	return nil
 }
 
-func createDaemonOnNode(c *Cluster, osd OSDInfo, nodeName string, config *provisionConfig) error {
+func createDaemonOnNode(c *Cluster, osd *OSDInfo, nodeName string, config *provisionConfig) error {
 	d, err := deploymentOnNode(c, osd, nodeName, config)
 	if err != nil {
 		return err

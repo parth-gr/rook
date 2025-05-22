@@ -32,7 +32,7 @@ all: build
 
 # Controller-gen version
 # f284e2e8... is master ahead of v0.5.0 which has ability to generate embedded objectmeta in CRDs
-CONTROLLER_GEN_VERSION=v0.14.0
+CONTROLLER_GEN_VERSION=v0.16.1
 
 # Set GOBIN
 ifeq (,$(shell go env GOBIN))
@@ -143,24 +143,52 @@ endif
 install: build.common
 	@$(MAKE) go.install
 
-check test: ## Runs unit tests.
+.PHONY: check
+check: test ## Runs checks (unit tests)
+
+.PHONY: test
+test: ## Runs unit tests.
 	@$(MAKE) go.test.unit
 
 test-integration: ## Runs integration tests.
 	@$(MAKE) go.test.integration
 
-lint: ## Check syntax and styling of go sources.
-	@$(MAKE) go.init
-	@$(MAKE) go.lint
-
 vet: ## Runs lint checks on go sources.
 	@$(MAKE) go.init
 	@$(MAKE) go.vet
 
-fmt: ## Check formatting of go sources.
-	@$(MAKE) go.init
+fmt: $(YQ) ## Check formatting of go sources.
 	@$(MAKE) go.fmt
 
+fmt-fix: $(YQ) ## Reformatting of go sources.
+	@$(MAKE) go.fmt-fix
+
+golangci-lint: $(YQ)
+	@$(MAKE) go.golangci-lint
+
+.PHONY: markdownlint
+markdownlint: ## Check formatting of documentation sources
+	markdownlint-cli2 "Documentation/**/**.md" "#Documentation/Helm-Charts/**" --config .markdownlint-cli2.cjs
+
+.PHONY: yamllint
+yamllint:
+	yamllint -c .yamllint deploy/examples/ --no-warnings
+
+.PHONY: lint
+lint: yamllint pylint shellcheck checkmake vet markdownlint golangci-lint ## Run various linters
+
+.PHONY: pylint
+pylint:
+	pylint $(shell find $(ROOT_DIR) -name '*.py') -E
+
+.PHONY: checkmake
+checkmake:
+	checkmake Makefile
+.PHONY: shellcheck
+shellcheck:
+	shellcheck --severity=warning --format=gcc --shell=bash $(shell find $(ROOT_DIR) -type f -name '*.sh') build/reset build/sed-in-place
+
+gen.codegen: codegen
 codegen: ${CODE_GENERATOR} ## Run code generators.
 	@build/codegen/codegen.sh
 
@@ -178,20 +206,22 @@ distclean: clean ## Remove all files that are created by building or configuring
 prune: ## Prune cached artifacts.
 	@$(MAKE) -C images prune
 
-docs: helm-docs
-	@build/deploy/generate-deploy-examples.sh
-
+gen.crds: crds
 crds: $(CONTROLLER_GEN) $(YQ)
 	@echo Updating CRD manifests
 	@build/crds/build-crds.sh $(CONTROLLER_GEN) $(YQ)
 	@GOBIN=$(GOBIN) build/crds/generate-crd-docs.sh
 
+gen.rbac: gen-rbac
 gen-rbac: $(HELM) $(YQ) ## Generate RBAC from Helm charts
 	@# output only stdout to the file; stderr for debugging should keep going to stderr
 	HELM=$(HELM) ./build/rbac/gen-common.sh
 	HELM=$(HELM) ./build/rbac/gen-nfs-rbac.sh
-	HELM=$(HELM) ./build/rbac/gen-psp.sh
 
+gen.docs: docs ## generate docs
+.PHONY: docs
+docs: helm-docs ## generate documentation
+gen.helm-docs: helm-docs
 helm-docs: $(HELM_DOCS) ## Use helm-docs to generate documentation from helm charts
 	$(HELM_DOCS) -c deploy/charts/rook-ceph \
 		-o ../../../Documentation/Helm-Charts/operator-chart.md \
@@ -202,38 +232,27 @@ helm-docs: $(HELM_DOCS) ## Use helm-docs to generate documentation from helm cha
 		-t ../../../Documentation/Helm-Charts/ceph-cluster-chart.gotmpl.md \
 		-t ../../../Documentation/Helm-Charts/_templates.gotmpl
 
-check-helm-docs:
-	@$(MAKE) helm-docs
-	@git diff --exit-code || { \
-	echo "Please run 'make helm-docs' locally, commit the updated docs, and push the change. See https://rook.io/docs/rook/latest/Contributing/documentation/#making-docs" ; \
-	exit 2 ; \
-	};
-check-docs:
-	@$(MAKE) docs
-	@git diff --exit-code || { \
-	echo "Please run 'make docs' locally, commit the updated docs, and push the change." ; \
-	exit 2 ; \
-	};
-
-
 docs-preview: ## Preview the documentation through mkdocs
 	mkdocs serve
 
 docs-build:  ## Build the documentation to the `site/` directory
 	mkdocs build --strict
 
+gen.crd-docs: generate-docs-crds
 generate-docs-crds: ## Build the documentation for CRD
 	@GOBIN=$(GOBIN) build/crds/generate-crd-docs.sh
 
+generate: gen.codegen gen.crds gen.rbac gen.docs gen.crd-docs ## Update all generated files (code, manifests, charts, and docs).
+
+
 .PHONY: all build.common
-.PHONY: build build.all install test check vet fmt codegen mod.check clean distclean prune
+.PHONY: build build.all install test check vet fmt codegen gen.codegen gen.rbac gen.crds gen.crd-docs gen.docs gen.helm-docs generate mod.check clean distclean prune
 
 # ====================================================================================
 # Help
 define HELPTEXT
-Options:
+available options:
     DEBUG        Whether to generate debug symbols. Default is 0.
-    IMAGES       Backend images to make. All by default. See: /rook/images/ dir
     PLATFORM     The platform to build.
     SUITE        The test suite to run.
     TESTFILTER   Tests to run in a suite.

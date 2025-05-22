@@ -47,7 +47,7 @@ const (
 	dummyVersionsRaw       = `
 	{
 		"mon": {
-			"ceph version 17.2.1 (0000000000000000000000000000000000) quincy (stable)": 3
+			"ceph version 19.2.1 (0000000000000000000000000000000000) squid (stable)": 3
 		}
 	}`
 )
@@ -202,7 +202,6 @@ func TestCephRBDMirrorController(t *testing.T) {
 		res, err := r.Reconcile(ctx, req)
 		assert.NoError(t, err)
 		assert.True(t, res.Requeue)
-
 	})
 
 	t.Run("success - peers are configured", func(t *testing.T) {

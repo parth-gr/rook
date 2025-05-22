@@ -37,9 +37,7 @@ import (
 // TimeoutWaitingForMessage can be used to identify if an error is due to a timeout.
 const TimeoutWaitingForMessage = "exec timeout waiting for"
 
-var (
-	CephCommandsTimeout = 15 * time.Second
-)
+var CephCommandsTimeout = 15 * time.Second
 
 // Executor is the main interface for all the exec commands
 type Executor interface {
@@ -284,7 +282,7 @@ func ExtractExitCode(err error) (int, error) {
 		return int(errType.ErrStatus.Code), nil
 
 	default:
-		logger.Debugf(err.Error())
+		logger.Debugf("%s", err.Error())
 		// This is ugly, but it's a decent backup just in case the error isn't a type above.
 		if strings.Contains(err.Error(), "command terminated with exit code") {
 			a := strings.SplitAfter(err.Error(), "command terminated with exit code")

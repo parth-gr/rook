@@ -29,7 +29,6 @@ import (
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
 	"github.com/rook/rook/pkg/clusterd"
 	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
-	"github.com/rook/rook/pkg/operator/ceph/version"
 	optest "github.com/rook/rook/pkg/operator/test"
 	exectest "github.com/rook/rook/pkg/util/exec/test"
 	"github.com/stretchr/testify/assert"
@@ -105,6 +104,7 @@ func TestCephStatus(t *testing.T) {
 		PgMap: cephclient.PgMap{TotalBytes: 0},
 	}
 	aggregateStatus = toCustomResourceStatus(currentStatus, newStatus)
+	// nolint:gosec // G115 no overflow expected in the test
 	assert.Equal(t, 0, int(aggregateStatus.Capacity.TotalBytes))
 	assert.Equal(t, "", aggregateStatus.Capacity.LastUpdated)
 
@@ -113,6 +113,7 @@ func TestCephStatus(t *testing.T) {
 		PgMap: cephclient.PgMap{TotalBytes: 1024},
 	}
 	aggregateStatus = toCustomResourceStatus(currentStatus, newStatus)
+	// nolint:gosec // G115 no overflow expected in the test
 	assert.Equal(t, 1024, int(aggregateStatus.Capacity.TotalBytes))
 	assert.Equal(t, formatTime(time.Now().UTC()), aggregateStatus.Capacity.LastUpdated)
 
@@ -124,6 +125,7 @@ func TestCephStatus(t *testing.T) {
 	}
 
 	aggregateStatus = toCustomResourceStatus(currentStatus, newStatus)
+	// nolint:gosec // G115 no overflow expected in the test
 	assert.Equal(t, 1024, int(aggregateStatus.Capacity.TotalBytes))
 	assert.Equal(t, formatTime(time.Now().Add(-time.Minute).UTC()), formatTime(time.Now().Add(-time.Minute).UTC()))
 }
@@ -162,7 +164,6 @@ func TestConfigureHealthSettings(t *testing.T) {
 		context:     &clusterd.Context{},
 		clusterInfo: cephclient.AdminTestClusterInfo("ns"),
 	}
-	c.clusterInfo.CephVersion = version.Quincy
 	setGlobalIDReclaim := false
 	c.context.Executor = &exectest.MockExecutor{
 		MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
@@ -326,13 +327,10 @@ func TestGetRookPodsOnNode(t *testing.T) {
 		{"app": "rook-ceph-osd"},
 		{"app": "csi-rbdplugin-provisioner"},
 		{"app": "csi-rbdplugin"},
-		{"app": "csi-rbdplugin-holder"},
 		{"app": "csi-cephfsplugin-provisioner"},
 		{"app": "csi-cephfsplugin"},
-		{"app": "csi-cephfsplugin-holder"},
 		{"app": "csi-nfsplugin-provisioner"},
 		{"app": "csi-nfsplugin"},
-		{"app": "csi-nfsplugin-holder"},
 		{"app": "rook-ceph-operator"},
 		{"app": "rook-ceph-crashcollector"},
 		{"app": "rook-ceph-mgr"},
@@ -368,7 +366,7 @@ func TestGetRookPodsOnNode(t *testing.T) {
 	pods, err := c.getRookPodsOnNode("node0")
 	assert.NoError(t, err)
 	// A pod is having two matching labels and its returned only once
-	assert.Equal(t, 17, len(pods))
+	assert.Equal(t, 14, len(pods))
 
 	podNames := []string{}
 	for _, pod := range pods {

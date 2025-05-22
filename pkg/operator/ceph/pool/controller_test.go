@@ -52,6 +52,18 @@ func TestCreatePool(t *testing.T) {
 	enabledMgrApp := false
 	clusterInfo := cephclient.AdminTestClusterInfo("mycluster")
 	executor := &exectest.MockExecutor{
+		MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
+			logger.Infof("CommandTimeout: %s %v", command, args)
+			if command == "rbd" {
+				if args[0] == "pool" && args[1] == "init" {
+					// assert that `rbd pool init` is only run when application is set to `rbd`
+					assert.Equal(t, "rbd", p.Application)
+					assert.Equal(t, p.Name, args[2])
+					return "{}", nil
+				}
+			}
+			return "", nil
+		},
 		MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
 			logger.Infof("Command: %s %v", command, args)
 			if command == "ceph" {
@@ -69,6 +81,7 @@ func TestCreatePool(t *testing.T) {
 							assert.Equal(t, ".mgr", args[4])
 							assert.Equal(t, "mgr", args[5])
 						} else {
+							fmt.Printf("pool - %v", args)
 							assert.Fail(t, fmt.Sprintf("invalid pool %q", args[4]))
 						}
 					}
@@ -79,14 +92,12 @@ func TestCreatePool(t *testing.T) {
 					return "{}", nil
 				} else if args[0] == "mirror" && args[2] == "disable" {
 					return "", nil
-				} else {
-					assert.Equal(t, []string{"pool", "init", p.Name}, args[0:3])
 				}
-
 			}
 			return "", nil
 		},
 	}
+
 	context := &clusterd.Context{Executor: executor}
 
 	clusterSpec := &cephv1.ClusterSpec{Storage: cephv1.StorageScopeSpec{Config: map[string]string{cephclient.CrushRootConfigKey: "cluster-crush-root"}}}
@@ -95,6 +106,8 @@ func TestCreatePool(t *testing.T) {
 		p.Name = "replicapool"
 		p.Replicated.Size = 1
 		p.Replicated.RequireSafeReplicaSize = false
+		// reset the application name
+		p.Application = ""
 		err := createPool(context, clusterInfo, clusterSpec, p)
 		assert.Nil(t, err)
 		assert.False(t, enabledMetricsApp)
@@ -102,6 +115,8 @@ func TestCreatePool(t *testing.T) {
 
 	t.Run("built-in mgr pool", func(t *testing.T) {
 		p.Name = ".mgr"
+		// reset the application name
+		p.Application = ""
 		err := createPool(context, clusterInfo, clusterSpec, p)
 		assert.Nil(t, err)
 		assert.True(t, enabledMgrApp)
@@ -112,6 +127,8 @@ func TestCreatePool(t *testing.T) {
 		p.Replicated.Size = 0
 		p.ErasureCoded.CodingChunks = 1
 		p.ErasureCoded.DataChunks = 2
+		// reset the application name
+		p.Application = ""
 		err := createPool(context, clusterInfo, clusterSpec, p)
 		assert.Nil(t, err)
 	})
@@ -171,7 +188,7 @@ func TestDeletePool(t *testing.T) {
 	// delete a pool that exists
 	p := &cephv1.NamedPoolSpec{Name: "mypool"}
 	err := deletePool(context, clusterInfo, p)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	// succeed even if the pool doesn't exist
 	p = &cephv1.NamedPoolSpec{Name: "otherpool"}
@@ -182,7 +199,7 @@ func TestDeletePool(t *testing.T) {
 	failOnDelete = true
 	p = &cephv1.NamedPoolSpec{Name: "mypool"}
 	err = deletePool(context, clusterInfo, p)
-	assert.NotNil(t, err)
+	assert.Error(t, err)
 }
 
 // TestCephBlockPoolController runs ReconcileCephBlockPool.Reconcile() against a
@@ -201,9 +218,13 @@ func TestCephBlockPoolController(t *testing.T) {
 	// A Pool resource with metadata and spec.
 	pool := &cephv1.CephBlockPool{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			UID:       types.UID("c47cac40-9bee-4d52-823b-ccd803ba5bfe"),
+			Name:       name,
+			Namespace:  namespace,
+			UID:        types.UID("c47cac40-9bee-4d52-823b-ccd803ba5bfe"),
+			Finalizers: []string{"cephblockpool.ceph.rook.io"},
+		},
+		TypeMeta: metav1.TypeMeta{
+			Kind: "CephBlockPool",
 		},
 		Spec: cephv1.NamedBlockPoolSpec{
 			PoolSpec: cephv1.PoolSpec{
@@ -346,7 +367,6 @@ func TestCephBlockPoolController(t *testing.T) {
 					return "{}", nil
 				}
 				return "", nil
-
 			},
 		}
 		c.Executor = executor
@@ -498,7 +518,7 @@ func TestCephBlockPoolController(t *testing.T) {
 		err := r.client.Update(context.TODO(), pool)
 		assert.NoError(t, err)
 		res, err := r.Reconcile(ctx, req)
-		// assert reconcile failure because peer token secert was not created
+		// assert reconcile failure because peer token secret was not created
 		assert.NoError(t, err)
 		assert.True(t, res.Requeue)
 	})
@@ -545,6 +565,191 @@ func TestCephBlockPoolController(t *testing.T) {
 	})
 }
 
+func TestDeletionBlocked(t *testing.T) {
+	// A Pool resource with metadata and spec.
+	pool := &cephv1.CephBlockPool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pool",
+			Namespace: "ns",
+		},
+		TypeMeta: metav1.TypeMeta{
+			Kind: "CephBlockPool",
+		},
+		Status: &cephv1.CephBlockPoolStatus{},
+	}
+	object := []runtime.Object{pool}
+	// Register operator types with the runtime scheme.
+	s := scheme.Scheme
+	s.AddKnownTypes(cephv1.SchemeGroupVersion,
+		&cephv1.CephBlockPoolList{},
+		&cephv1.CephBlockPoolRadosNamespaceList{},
+		&cephv1.CephBlockPool{},
+		&cephv1.CephBlockPoolRadosNamespace{},
+	)
+	blockImageCount := 0
+	rnsImageCount := 0
+	cl := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(object...).Build()
+	executor := &exectest.MockExecutor{
+		MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
+			logger.Infof("Command: %s %v", command, args)
+			if args[0] == "pool" {
+				if args[1] == "stats" {
+					response := "{\"images\":{\"count\":%d,\"provisioned_bytes\":0,\"snap_count\":0},\"trash\":{\"count\":1,\"provisioned_bytes\":2048,\"snap_count\":0}}"
+					if args[4] == "--namespace" {
+						return fmt.Sprintf(response, rnsImageCount), nil
+					} else {
+						return fmt.Sprintf(response, blockImageCount), nil
+					}
+				}
+			}
+			return "not implemented", nil
+		},
+	}
+	c := &clusterd.Context{
+		Executor:      executor,
+		Clientset:     testop.New(t, 1),
+		RookClientset: rookclient.NewSimpleClientset(),
+	}
+	// Create a ReconcileCephBlockPool object with the scheme and fake client.
+	r := &ReconcileCephBlockPool{
+		client:            cl,
+		scheme:            s,
+		context:           c,
+		blockPoolContexts: make(map[string]*blockPoolHealth),
+		opManagerContext:  context.TODO(),
+		recorder:          record.NewFakeRecorder(5),
+		clusterInfo:       cephclient.AdminTestClusterInfo("mycluster"),
+	}
+	cephCluster := &cephv1.CephCluster{}
+	t.Run("deletion is allowed with no images or rns", func(t *testing.T) {
+		err := r.handleDeletionBlocked(pool, cephCluster)
+		assert.NoError(t, err)
+
+		result := &cephv1.CephBlockPool{}
+		err = r.client.Get(context.TODO(), types.NamespacedName{Name: pool.Name, Namespace: pool.Namespace}, result)
+		assert.NoError(t, err)
+		assert.Equal(t, pool.Name, result.Name)
+		assert.Equal(t, pool.Namespace, result.Namespace)
+		assert.Equal(t, 2, len(pool.Status.Conditions))
+		assert.Equal(t, "PoolDeletionIsBlocked", string(pool.Status.Conditions[0].Type))
+		assert.Equal(t, v1.ConditionFalse, pool.Status.Conditions[0].Status)
+		assert.Equal(t, "PoolEmpty", string(pool.Status.Conditions[0].Reason))
+		assert.Equal(t, "DeletionIsBlocked", string(pool.Status.Conditions[1].Type))
+		assert.Equal(t, v1.ConditionFalse, pool.Status.Conditions[1].Status)
+		assert.Equal(t, "ObjectHasNoDependents", string(pool.Status.Conditions[1].Reason))
+	})
+	t.Run("image prevents deletion", func(t *testing.T) {
+		blockImageCount = 1
+		err := r.handleDeletionBlocked(pool, cephCluster)
+		assert.Error(t, err)
+
+		result := &cephv1.CephBlockPool{}
+		err = r.client.Get(context.TODO(), types.NamespacedName{Name: pool.Name, Namespace: pool.Namespace}, result)
+		assert.NoError(t, err)
+		assert.Equal(t, pool.Name, result.Name)
+		assert.Equal(t, pool.Namespace, result.Namespace)
+		assert.Equal(t, 2, len(pool.Status.Conditions))
+		assert.Equal(t, "PoolDeletionIsBlocked", string(pool.Status.Conditions[0].Type))
+		assert.Equal(t, v1.ConditionTrue, pool.Status.Conditions[0].Status)
+		assert.Equal(t, "PoolNotEmpty", string(pool.Status.Conditions[0].Reason))
+		assert.Equal(t, "DeletionIsBlocked", string(pool.Status.Conditions[1].Type))
+		assert.Equal(t, v1.ConditionFalse, pool.Status.Conditions[1].Status)
+		assert.Equal(t, "ObjectHasNoDependents", string(pool.Status.Conditions[1].Reason))
+	})
+	t.Run("rados namespace prevents deletion", func(t *testing.T) {
+		radosNamespace := &cephv1.CephBlockPoolRadosNamespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-rns",
+				Namespace: pool.Namespace,
+			},
+			Spec: cephv1.CephBlockPoolRadosNamespaceSpec{
+				BlockPoolName: pool.Name,
+			},
+		}
+		_, err := c.RookClientset.CephV1().CephBlockPoolRadosNamespaces(pool.Namespace).Create(context.TODO(), radosNamespace, metav1.CreateOptions{})
+		assert.NoError(t, err)
+
+		// A radosnamespaces prevents deletion of the pool
+		blockImageCount = 0
+		rnsImageCount = 1
+		err = r.handleDeletionBlocked(pool, cephCluster)
+		assert.Error(t, err)
+
+		result := &cephv1.CephBlockPool{}
+		err = r.client.Get(context.TODO(), types.NamespacedName{Name: pool.Name, Namespace: pool.Namespace}, result)
+		assert.NoError(t, err)
+		assert.Equal(t, pool.Name, result.Name)
+		assert.Equal(t, pool.Namespace, result.Namespace)
+		assert.Equal(t, 2, len(pool.Status.Conditions))
+		assert.Equal(t, "PoolDeletionIsBlocked", string(pool.Status.Conditions[0].Type))
+		assert.Equal(t, v1.ConditionTrue, pool.Status.Conditions[0].Status)
+		assert.Equal(t, "PoolNotEmpty", string(pool.Status.Conditions[0].Reason))
+		assert.Equal(t, "DeletionIsBlocked", string(pool.Status.Conditions[1].Type))
+		assert.Equal(t, v1.ConditionTrue, pool.Status.Conditions[1].Status)
+		assert.Equal(t, "ObjectHasDependents", string(pool.Status.Conditions[1].Reason))
+	})
+}
+
+func TestIsAnyRadosNamespaceMirrored(t *testing.T) {
+	pool := "test"
+	object := []runtime.Object{}
+	// Register operator types with the runtime scheme.
+	s := scheme.Scheme
+	cl := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(object...).Build()
+	executor := &exectest.MockExecutor{}
+	c := &clusterd.Context{
+		Executor:      executor,
+		Clientset:     testop.New(t, 1),
+		RookClientset: rookclient.NewSimpleClientset(),
+	}
+	// Create a ReconcileCephBlockPool object with the scheme and fake client.
+	r := &ReconcileCephBlockPool{
+		client:            cl,
+		scheme:            s,
+		context:           c,
+		blockPoolContexts: make(map[string]*blockPoolHealth),
+		opManagerContext:  context.TODO(),
+		recorder:          record.NewFakeRecorder(5),
+		clusterInfo:       cephclient.AdminTestClusterInfo("mycluster"),
+	}
+
+	t.Run("rados namespace mirroring enabled", func(t *testing.T) {
+		r.context.Executor = &exectest.MockExecutor{
+			MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
+				if args[0] == "namespace" {
+					assert.Equal(t, pool, args[2])
+					return `[{"name":"abc"},{"name":"abc1"},{"name":"abc3"}]`, nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" && args[2] == "info" {
+					return "{}", nil
+				}
+				return "", nil
+			},
+		}
+		enabled, err := r.isAnyRadosNamespaceMirrored(pool)
+		assert.NoError(t, err)
+		assert.True(t, enabled)
+	})
+
+	t.Run("rados namespace mirroring disabled", func(t *testing.T) {
+		r.context.Executor = &exectest.MockExecutor{
+			MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
+				if args[0] == "namespace" {
+					assert.Equal(t, pool, args[2])
+					return `[]`, nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" && args[2] == "info" {
+					return "{}", nil
+				}
+				return "", nil
+			},
+		}
+		enabled, err := r.isAnyRadosNamespaceMirrored(pool)
+		assert.NoError(t, err)
+		assert.False(t, enabled)
+	})
+}
+
 func TestConfigureRBDStats(t *testing.T) {
 	var (
 		s         = runtime.NewScheme()
@@ -558,12 +763,14 @@ func TestConfigureRBDStats(t *testing.T) {
 			logger.Infof("Command: %s %v", command, args)
 			if args[0] == "config" && args[2] == "mgr" && args[3] == "mgr/prometheus/rbd_stats_pools" {
 				if args[1] == "set" {
+					mockedPools = args[4]
 					return "", nil
 				}
 				if args[1] == "get" {
 					return mockedPools, nil
 				}
 				if args[1] == "rm" {
+					mockedPools = ""
 					return "", nil
 				}
 			}
@@ -624,7 +831,6 @@ func TestConfigureRBDStats(t *testing.T) {
 	monStore := config.GetMonStore(context, clusterInfo)
 	e := monStore.Set("mgr", "mgr/prometheus/rbd_stats_pools", "pool1,pool2")
 	assert.Nil(t, e)
-	mockedPools = "my-pool-with-rbd-stats,pool1,pool2"
 	e = configureRBDStats(context, clusterInfo, "")
 	assert.Nil(t, e)
 
@@ -633,7 +839,6 @@ func TestConfigureRBDStats(t *testing.T) {
 	assert.Equal(t, "my-pool-with-rbd-stats,pool1,pool2", rbdStatsPools)
 
 	// Case 6: Deleted CephBlockPool should be excluded from config
-	mockedPools = "pool1,pool2"
 	err = configureRBDStats(context, clusterInfo, "my-pool-with-rbd-stats")
 	assert.Nil(t, err)
 
@@ -641,7 +846,7 @@ func TestConfigureRBDStats(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, "pool1,pool2", rbdStatsPools)
 
-	//Case 7: Duplicate entries should be removed from config
+	// Case 7: Duplicate entries should be removed from config
 	e = monStore.Set("mgr", "mgr/prometheus/rbd_stats_pools", "pool1,pool2,pool1")
 	assert.Nil(t, e)
 	err = configureRBDStats(context, clusterInfo, "")
@@ -649,7 +854,7 @@ func TestConfigureRBDStats(t *testing.T) {
 
 	rbdStatsPools, err = monStore.Get("mgr", "mgr/prometheus/rbd_stats_pools")
 	assert.Nil(t, err)
-	assert.Equal(t, "pool1,pool2", rbdStatsPools)
+	assert.Equal(t, "my-pool-with-rbd-stats,pool1,pool2", rbdStatsPools)
 
 	// Case 8: Two CephBlockPools with EnableRBDStats:false & EnableRBDStats:true.
 	// SetConfig returns an error
@@ -661,5 +866,111 @@ func TestConfigureRBDStats(t *testing.T) {
 	}
 	err = configureRBDStats(context, clusterInfo, "")
 	assert.NotNil(t, err)
+}
 
+func TestGenerateStatsPoolList(t *testing.T) {
+	tests := []struct {
+		name               string
+		existingStatsPools []string
+		rookStatsPools     []string
+		removePools        []string
+		expectedOutput     string
+	}{
+		// Basic cases
+		{
+			name:               "Empty lists",
+			existingStatsPools: []string{},
+			rookStatsPools:     []string{},
+			removePools:        []string{},
+			expectedOutput:     "",
+		},
+		{
+			name:               "Single-item lists, no removal",
+			existingStatsPools: []string{"p1"},
+			rookStatsPools:     []string{"p2"},
+			removePools:        []string{},
+			expectedOutput:     "p1,p2",
+		},
+		// Overlap and duplicates
+		{
+			name:               "Overlapping pools, some to remove",
+			existingStatsPools: []string{"p1", "p2", "p3"},
+			rookStatsPools:     []string{"p2", "p4", "p5"},
+			removePools:        []string{"p1", "p5"},
+			expectedOutput:     "p2,p3,p4",
+		},
+		{
+			name:               "Non-overlapping lists",
+			existingStatsPools: []string{"p1", "p2"},
+			rookStatsPools:     []string{"p3", "p4"},
+			removePools:        []string{},
+			expectedOutput:     "p1,p2,p3,p4",
+		},
+		// All pools removed
+		{
+			name:               "All pools removed",
+			existingStatsPools: []string{"p1", "p2"},
+			rookStatsPools:     []string{"p2", "p3"},
+			removePools:        []string{"p1", "p2", "p3"},
+			expectedOutput:     "",
+		},
+		// Mixed scenarios with edge cases
+		{
+			name:               "Only removed pools",
+			existingStatsPools: []string{"p1", "p2"},
+			rookStatsPools:     []string{"p2", "p3"},
+			removePools:        []string{"p1", "p2", "p3", "p4"},
+			expectedOutput:     "",
+		},
+		{
+			name:               "Duplicate pools across lists",
+			existingStatsPools: []string{"p1", "p2", "p1"},
+			rookStatsPools:     []string{"p2", "p3", "p3"},
+			removePools:        []string{},
+			expectedOutput:     "p1,p2,p3",
+		},
+		{
+			name:               "Empty string in pools",
+			existingStatsPools: []string{"p1", ""},
+			rookStatsPools:     []string{"p2", ""},
+			removePools:        []string{""},
+			expectedOutput:     "p1,p2",
+		},
+		{
+			name:               "Empty string in remove pools",
+			existingStatsPools: []string{"p1", "p2"},
+			rookStatsPools:     []string{"p3", "p4"},
+			removePools:        []string{""},
+			expectedOutput:     "p1,p2,p3,p4",
+		},
+		{
+			name:               "All lists empty strings",
+			existingStatsPools: []string{""},
+			rookStatsPools:     []string{""},
+			removePools:        []string{""},
+			expectedOutput:     "",
+		},
+		// Larger cases
+		{
+			name:               "Large unique pool list",
+			existingStatsPools: []string{"p1", "p2", "p3", "p4"},
+			rookStatsPools:     []string{"p5", "p6", "p7", "p8"},
+			removePools:        []string{"p1", "p8"},
+			expectedOutput:     "p2,p3,p4,p5,p6,p7",
+		},
+		{
+			name:               "Large list with many duplicates",
+			existingStatsPools: []string{"p1", "p2", "p3", "p2", "p1"},
+			rookStatsPools:     []string{"p2", "p3", "p3", "p4", "p1"},
+			removePools:        []string{"p4"},
+			expectedOutput:     "p1,p2,p3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := generateStatsPoolList(tt.existingStatsPools, tt.rookStatsPools, tt.removePools)
+			assert.Equal(t, tt.expectedOutput, result)
+		})
+	}
 }

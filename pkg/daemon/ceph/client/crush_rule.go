@@ -57,9 +57,7 @@ rule %s {
 `
 )
 
-var (
-	stepEmit = &stepSpec{Operation: "emit"}
-)
+var stepEmit = &stepSpec{Operation: "emit"}
 
 func buildTwoStepPlainCrushRule(crushMap CrushMap, ruleName string, pool cephv1.PoolSpec) string {
 	var crushRuleInsert string
@@ -150,8 +148,9 @@ func buildTwoStepCrushSteps(pool cephv1.PoolSpec) []stepSpec {
 	// Step three
 	stepTakeSubFailureDomain := &stepSpec{
 		Operation: "chooseleaf_firstn",
-		Number:    pool.Replicated.ReplicasPerFailureDomain,
-		Type:      pool.Replicated.SubFailureDomain,
+		// nolint:gosec // G115 - casting uint to int has no overflow
+		Number: int(pool.Replicated.ReplicasPerFailureDomain),
+		Type:   pool.Replicated.SubFailureDomain,
 	}
 	steps = append(steps, *stepTakeSubFailureDomain)
 	steps = append(steps, *stepEmit)

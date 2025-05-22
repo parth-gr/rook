@@ -19,9 +19,11 @@ package v1
 import (
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // ***************************************************************************
@@ -162,6 +164,12 @@ type ClusterSpec struct {
 	// +optional
 	WaitTimeoutForHealthyOSDInMinutes time.Duration `json:"waitTimeoutForHealthyOSDInMinutes,omitempty"`
 
+	// UpgradeOSDRequiresHealthyPGs defines if OSD upgrade requires PGs are clean. If set to `true` OSD upgrade process won't start until PGs are healthy.
+	// This configuration will be ignored if `skipUpgradeChecks` is `true`.
+	// Default is false.
+	// +optional
+	UpgradeOSDRequiresHealthyPGs bool `json:"upgradeOSDRequiresHealthyPGs,omitempty"`
+
 	// A spec for configuring disruption management.
 	// +nullable
 	// +optional
@@ -231,6 +239,11 @@ type ClusterSpec struct {
 	// +optional
 	// +nullable
 	CephConfig map[string]map[string]string `json:"cephConfig,omitempty"`
+
+	// CephConfigFromSecret works exactly like CephConfig but takes config value from Secret Key reference.
+	// +optional
+	// +nullable
+	CephConfigFromSecret map[string]map[string]v1.SecretKeySelector `json:"cephConfigFromSecret,omitempty"`
 }
 
 // CSIDriverSpec defines CSI Driver settings applied per cluster.
@@ -400,6 +413,20 @@ type MonitoringSpec struct {
 	// Interval determines prometheus scrape interval
 	// +optional
 	Interval *metav1.Duration `json:"interval,omitempty"`
+
+	// Ceph exporter configuration
+	// +optional
+	Exporter *CephExporterSpec `json:"exporter,omitempty"`
+}
+
+type CephExporterSpec struct {
+	// Only performance counters greater than or equal to this option are fetched
+	// +kubebuilder:default=5
+	PerfCountersPrioLimit int64 `json:"perfCountersPrioLimit,omitempty"`
+
+	// Time to wait before sending requests again to exporter server (seconds)
+	// +kubebuilder:default=5
+	StatsPeriodSeconds int64 `json:"statsPeriodSeconds,omitempty"`
 }
 
 // ClusterStatus represents the status of a Ceph cluster
@@ -467,8 +494,9 @@ type Capacity struct {
 
 // CephStorage represents flavors of Ceph Cluster Storage
 type CephStorage struct {
-	DeviceClasses []DeviceClasses `json:"deviceClasses,omitempty"`
-	OSD           OSDStatus       `json:"osd,omitempty"`
+	DeviceClasses  []DeviceClasses  `json:"deviceClasses,omitempty"`
+	OSD            OSDStatus        `json:"osd,omitempty"`
+	DeprecatedOSDs map[string][]int `json:"deprecatedOSDs,omitempty"`
 }
 
 // DeviceClasses represents device classes of a Ceph Cluster
@@ -479,7 +507,13 @@ type DeviceClasses struct {
 // OSDStatus represents OSD status of the ceph Cluster
 type OSDStatus struct {
 	// StoreType is a mapping between the OSD backend stores and number of OSDs using these stores
-	StoreType map[string]int `json:"storeType,omitempty"`
+	StoreType       map[string]int  `json:"storeType,omitempty"`
+	MigrationStatus MigrationStatus `json:"migrationStatus,omitempty"`
+}
+
+// MigrationStatus status represents the current status of any OSD migration.
+type MigrationStatus struct {
+	Pending int `json:"pending,omitempty"`
 }
 
 // ClusterVersion represents the version of a Ceph Cluster
@@ -525,7 +559,8 @@ const (
 	ReconcileFailed ConditionReason = "ReconcileFailed"
 	// ReconcileStarted represents when a resource reconciliation started.
 	ReconcileStarted ConditionReason = "ReconcileStarted"
-
+	// ReconcileRequeuing represents when a resource reconciliation requeue.
+	ReconcileRequeuing ConditionReason = "ReconcileRequeuing"
 	// DeletingReason represents when Rook has detected a resource object should be deleted.
 	DeletingReason ConditionReason = "Deleting"
 	// ObjectHasDependentsReason represents when a resource object has dependents that are blocking
@@ -534,6 +569,18 @@ const (
 	// ObjectHasNoDependentsReason represents when a resource object has no dependents that are
 	// blocking deletion.
 	ObjectHasNoDependentsReason ConditionReason = "ObjectHasNoDependents"
+	// PoolNotEmptyReason represents when a pool contains images or snapshots that are blocking
+	// deletion.
+	PoolNotEmptyReason ConditionReason = "PoolNotEmpty"
+	// PoolEmptyReason represents when a pool does not contain images or snapshots that are blocking
+	// deletion.
+	PoolEmptyReason ConditionReason = "PoolEmpty"
+	// RadosNamespaceNotEmptyReason represents when a rados namespace contains images or snapshots that are blocking
+	// deletion.
+	RadosNamespaceNotEmptyReason ConditionReason = "RadosNamespaceNotEmpty"
+	// RadosNamespaceEmptyReason represents when a rados namespace does not contain images or snapshots that are blocking
+	// deletion.
+	RadosNamespaceEmptyReason ConditionReason = "RadosNamespaceEmpty"
 )
 
 // ConditionType represent a resource's status
@@ -555,6 +602,10 @@ const (
 
 	// ConditionDeletionIsBlocked represents when deletion of the object is blocked.
 	ConditionDeletionIsBlocked ConditionType = "DeletionIsBlocked"
+	// ConditionPoolDeletionIsBlocked represents when deletion of the object is blocked.
+	ConditionPoolDeletionIsBlocked ConditionType = "PoolDeletionIsBlocked"
+	// ConditionRadosNSDeletionIsBlocked represents when deletion of the object is blocked.
+	ConditionRadosNSDeletionIsBlocked ConditionType = "RadosNamespaceDeletionIsBlocked"
 )
 
 // ClusterState represents the state of a Ceph Cluster
@@ -599,6 +650,13 @@ type MonSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +optional
 	VolumeClaimTemplate *VolumeClaimTemplate `json:"volumeClaimTemplate,omitempty"`
+	// ExternalMonIDs - optional list of monitor IDs which are deployed externally and not managed by Rook.
+	// If set, Rook will not remove mons with given IDs from quorum.
+	// This parameter is used only for local Rook cluster running in normal mode
+	// and will be ignored if external or stretched mode is used.
+	// leading
+	// +optional
+	ExternalMonIDs []string `json:"externalMonIDs,omitempty"`
 }
 
 // VolumeClaimTemplate is a simplified version of K8s corev1's PVC. It has no type meta or status.
@@ -666,6 +724,14 @@ type Module struct {
 	// Enabled determines whether a module should be enabled or not
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
+	// Settings to further configure the module
+	Settings ModuleSettings `json:"settings,omitempty"`
+}
+
+type ModuleSettings struct {
+	// BalancerMode sets the `balancer` module with different modes like `upmap`, `crush-compact` etc
+	// +kubebuilder:validation:Enum="";crush-compat;upmap;read;upmap-read
+	BalancerMode string `json:"balancerMode,omitempty"`
 }
 
 // ExternalSpec represents the options supported by an external cluster
@@ -739,6 +805,10 @@ type PoolSpec struct {
 	// +optional
 	// +nullable
 	DeviceClass string `json:"deviceClass,omitempty"`
+
+	// Allow rook operator to change the pool CRUSH tunables once the pool is created
+	// +optional
+	EnableCrushUpdates bool `json:"enableCrushUpdates,omitempty"`
 
 	// DEPRECATED: use Parameters instead, e.g., Parameters["compression_mode"] = "force"
 	// The inline compression mode in Bluestore OSD to set to (options are: none, passive, aggressive, force)
@@ -817,6 +887,8 @@ type CephBlockPoolStatus struct {
 	MirroringStatus *MirroringStatusSpec `json:"mirroringStatus,omitempty"`
 	// +optional
 	MirroringInfo *MirroringInfoSpec `json:"mirroringInfo,omitempty"`
+	// optional
+	PoolID int `json:"poolID,omitempty"`
 	// +optional
 	SnapshotScheduleStatus *SnapshotScheduleStatusSpec `json:"snapshotScheduleStatus,omitempty"`
 	// +optional
@@ -828,11 +900,11 @@ type CephBlockPoolStatus struct {
 	Conditions         []Condition `json:"conditions,omitempty"`
 }
 
-// MirroringStatusSpec is the status of the pool mirroring
+// MirroringStatusSpec is the status of the pool/radosNamespace mirroring
 type MirroringStatusSpec struct {
-	// PoolMirroringStatus is the mirroring status of a pool
+	// MirroringStatus is the mirroring status of a pool/radosNamespace
 	// +optional
-	PoolMirroringStatus `json:",inline"`
+	MirroringStatus `json:",inline"`
 	// LastChecked is the last time time the status was checked
 	// +optional
 	LastChecked string `json:"lastChecked,omitempty"`
@@ -844,15 +916,15 @@ type MirroringStatusSpec struct {
 	Details string `json:"details,omitempty"`
 }
 
-// PoolMirroringStatus is the pool mirror status
-type PoolMirroringStatus struct {
+// MirroringStatus is the pool/radosNamespace mirror status
+type MirroringStatus struct {
 	// Summary is the mirroring status summary
 	// +optional
-	Summary *PoolMirroringStatusSummarySpec `json:"summary,omitempty"`
+	Summary *MirroringStatusSummarySpec `json:"summary,omitempty"`
 }
 
-// PoolMirroringStatusSummarySpec is the summary output of the command
-type PoolMirroringStatusSummarySpec struct {
+// MirroringStatusSummarySpec is the summary output of the command
+type MirroringStatusSummarySpec struct {
 	// Health is the mirroring health
 	// +optional
 	Health string `json:"health,omitempty"`
@@ -866,6 +938,18 @@ type PoolMirroringStatusSummarySpec struct {
 	// +optional
 	// +nullable
 	States StatesSpec `json:"states,omitempty"`
+	// ImageStates is the various state for all mirrored images
+	// +optional
+	// +nullable
+	ImageStates *StatesSpec `json:"image_states,omitempty"`
+	// GroupHealth is the health of the mirrored image group
+	// +optional
+	// +nullable
+	GroupHealth string `json:"group_health,omitempty"`
+	// GroupStates is the various state for all mirrored image groups
+	// +optional
+	// +nullable
+	GroupStates StatesSpec `json:"group_states,omitempty"`
 }
 
 // StatesSpec are rbd images mirroring state
@@ -893,10 +977,10 @@ type StatesSpec struct {
 	Error int `json:"error,omitempty"`
 }
 
-// MirroringInfoSpec is the status of the pool mirroring
+// MirroringInfoSpec is the status of the pool/radosnamespace mirroring
 type MirroringInfoSpec struct {
 	// +optional
-	*PoolMirroringInfo `json:",inline"`
+	*MirroringInfo `json:",inline"`
 	// +optional
 	LastChecked string `json:"lastChecked,omitempty"`
 	// +optional
@@ -905,8 +989,8 @@ type MirroringInfoSpec struct {
 	Details string `json:"details,omitempty"`
 }
 
-// PoolMirroringInfo is the mirroring info of a given pool
-type PoolMirroringInfo struct {
+// MirroringInfo is the mirroring info of a given pool/radosnamespace
+type MirroringInfo struct {
 	// Mode is the mirroring mode
 	// +optional
 	Mode string `json:"mode,omitempty"`
@@ -1039,7 +1123,8 @@ type MirroringSpec struct {
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 
-	// Mode is the mirroring mode: either pool or image
+	// Mode is the mirroring mode: pool, image or init-only.
+	// +kubebuilder:validation:Enum=pool;image;init-only
 	// +optional
 	Mode string `json:"mode,omitempty"`
 
@@ -1133,11 +1218,15 @@ type CephFilesystemList struct {
 type FilesystemSpec struct {
 	// The metadata pool settings
 	// +nullable
-	MetadataPool PoolSpec `json:"metadataPool"`
+	MetadataPool NamedPoolSpec `json:"metadataPool"`
 
 	// The data pool settings, with optional predefined pool name.
 	// +nullable
 	DataPools []NamedPoolSpec `json:"dataPools"`
+
+	// Preserve pool names as specified
+	// +optional
+	PreservePoolNames bool `json:"preservePoolNames,omitempty"`
 
 	// Preserve pools on filesystem deletion
 	// +optional
@@ -1454,6 +1543,14 @@ type ObjectStoreSpec struct {
 	// +nullable
 	Gateway GatewaySpec `json:"gateway"`
 
+	// The protocol specification
+	// +optional
+	Protocols ProtocolSpec `json:"protocols,omitempty"`
+
+	// The authentication configuration
+	// +optional
+	Auth AuthSpec `json:"auth,omitempty"`
+
 	// The multisite info
 	// +optional
 	// +nullable
@@ -1478,7 +1575,10 @@ type ObjectStoreSpec struct {
 	// +optional
 	AllowUsersInNamespaces []string `json:"allowUsersInNamespaces,omitempty"`
 
-	// Hosting settings for the object store
+	// Hosting settings for the object store.
+	// A common use case for hosting configuration is to inform Rook of endpoints that support DNS
+	// wildcards, which in turn allows virtual host-style bucket addressing.
+	// +nullable
 	// +optional
 	Hosting *ObjectStoreHostingSpec `json:"hosting,omitempty"`
 }
@@ -1487,15 +1587,80 @@ type ObjectStoreSpec struct {
 type ObjectSharedPoolsSpec struct {
 	// The metadata pool used for creating RADOS namespaces in the object store
 	// +kubebuilder:validation:XValidation:message="object store shared metadata pool is immutable",rule="self == oldSelf"
-	MetadataPoolName string `json:"metadataPoolName"`
+	// +optional
+	MetadataPoolName string `json:"metadataPoolName,omitempty"`
 
 	// The data pool used for creating RADOS namespaces in the object store
 	// +kubebuilder:validation:XValidation:message="object store shared data pool is immutable",rule="self == oldSelf"
-	DataPoolName string `json:"dataPoolName"`
+	// +optional
+	DataPoolName string `json:"dataPoolName,omitempty"`
 
 	// Whether the RADOS namespaces should be preserved on deletion of the object store
 	// +optional
 	PreserveRadosNamespaceDataOnDelete bool `json:"preserveRadosNamespaceDataOnDelete"`
+
+	// PoolPlacements control which Pools are associated with a particular RGW bucket.
+	// Once PoolPlacements are defined, RGW client will be able to associate pool
+	// with ObjectStore bucket by providing "<LocationConstraint>" during s3 bucket creation
+	// or "X-Storage-Policy" header during swift container creation.
+	// See: https://docs.ceph.com/en/latest/radosgw/placement/#placement-targets
+	// PoolPlacement with name: "default" will be used as a default pool if no option
+	// is provided during bucket creation.
+	// If default placement is not provided, spec.sharedPools.dataPoolName and spec.sharedPools.MetadataPoolName will be used as default pools.
+	// If spec.sharedPools are also empty, then RGW pools (spec.dataPool and spec.metadataPool) will be used as defaults.
+	// +optional
+	PoolPlacements []PoolPlacementSpec `json:"poolPlacements,omitempty"`
+}
+
+type PoolPlacementSpec struct {
+	// Pool placement name. Name can be arbitrary. Placement with name "default" will be used as default.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9._/-]+$`
+	Name string `json:"name"`
+
+	// Sets given placement as default. Only one placement in the list can be marked as default.
+	// Default is false.
+	// +optional
+	Default bool `json:"default"`
+
+	// The metadata pool used to store ObjectStore bucket index.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	MetadataPoolName string `json:"metadataPoolName"`
+
+	// The data pool used to store ObjectStore objects data.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	DataPoolName string `json:"dataPoolName"`
+
+	// The data pool used to store ObjectStore data that cannot use erasure coding (ex: multi-part uploads).
+	// If dataPoolName is not erasure coded, then there is no need for dataNonECPoolName.
+	// +optional
+	DataNonECPoolName string `json:"dataNonECPoolName,omitempty"`
+
+	// StorageClasses can be selected by user to override dataPoolName during object creation.
+	// Each placement has default STANDARD StorageClass pointing to dataPoolName.
+	// This list allows defining additional StorageClasses on top of default STANDARD storage class.
+	// +optional
+	StorageClasses []PlacementStorageClassSpec `json:"storageClasses,omitempty"`
+}
+
+type PlacementStorageClassSpec struct {
+	// Name is the StorageClass name. Ceph allows arbitrary name for StorageClasses,
+	// however most clients/libs insist on AWS names so it is recommended to use
+	// one of the valid x-amz-storage-class values for better compatibility:
+	// REDUCED_REDUNDANCY | STANDARD_IA | ONEZONE_IA | INTELLIGENT_TIERING | GLACIER | DEEP_ARCHIVE | OUTPOSTS | GLACIER_IR | SNOW | EXPRESS_ONEZONE
+	// See AWS docs: https://aws.amazon.com/de/s3/storage-classes/
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9._/-]+$`
+	Name string `json:"name"`
+
+	// DataPoolName is the data pool used to store ObjectStore objects data.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	DataPoolName string `json:"dataPoolName"`
 }
 
 // ObjectHealthCheckSpec represents the health check of an object store
@@ -1596,6 +1761,11 @@ type GatewaySpec struct {
 	// +nullable
 	Service *RGWServiceSpec `json:"service,omitempty"`
 
+	// Enable enhanced operation Logs for S3 in a sidecar named ops-log
+	// +optional
+	// +nullable
+	OpsLogSidecar *OpsLogSidecar `json:"opsLogSidecar,omitempty"`
+
 	// Whether host networking is enabled for the rgw daemon. If not set, the network settings from the cluster CR will be applied.
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +nullable
@@ -1607,13 +1777,65 @@ type GatewaySpec struct {
 	// +nullable
 	// +optional
 	DashboardEnabled *bool `json:"dashboardEnabled,omitempty"`
+
+	// AdditionalVolumeMounts allows additional volumes to be mounted to the RGW pod.
+	// The root directory for each additional volume mount is `/var/rgw`.
+	// Example: for an additional mount at subPath `ldap`, mounted from a secret that has key
+	// `bindpass.secret`, the file would reside at `/var/rgw/ldap/bindpass.secret`.
+	AdditionalVolumeMounts AdditionalVolumeMounts `json:"additionalVolumeMounts,omitempty"`
+
+	// RgwConfig sets Ceph RGW config values for the gateway clients that serve this object store.
+	// Values are modified at runtime without RGW restart.
+	// This feature is intended for advanced users. It allows breaking configurations to be easily
+	// applied. Use with caution.
+	// +nullable
+	// +optional
+	RgwConfig map[string]string `json:"rgwConfig,omitempty"`
+
+	// RgwConfigFromSecret works exactly like RgwConfig but takes config value from Secret Key reference.
+	// Values are modified at runtime without RGW restart.
+	// This feature is intended for advanced users. It allows breaking configurations to be easily
+	// applied. Use with caution.
+	// +nullable
+	// +optional
+	RgwConfigFromSecret map[string]v1.SecretKeySelector `json:"rgwConfigFromSecret,omitempty"`
+
+	// RgwCommandFlags sets Ceph RGW config values for the gateway clients that serve this object
+	// store. Values are modified at RGW startup, resulting in RGW pod restarts.
+	// This feature is intended for advanced users. It allows breaking configurations to be easily
+	// applied. Use with caution.
+	// +nullable
+	// +optional
+	RgwCommandFlags map[string]string `json:"rgwCommandFlags,omitempty"`
+
+	// ReadAffinity defines the RGW read affinity policy to optimize the read requests for the RGW clients
+	// Note: Only supported from Ceph Tentacle (v20)
+	// +optional
+	ReadAffinity *RgwReadAffinity `json:"readAffinity,omitempty"`
+}
+
+type RgwReadAffinity struct {
+	// Type defines the RGW ReadAffinity type
+	// localize: read from the nearest OSD based on crush location of the RGW client
+	// balance: picks a random OSD from the PG's active set
+	// default: read from the primary OSD
+	// +kubebuilder:validation:Enum=localize;balance;default
+	// +required
+	Type string `json:"type"`
+}
+
+// RGWLoggingSpec is intended to extend the s3/swift logging for client operations
+type OpsLogSidecar struct {
+	// Resources represents the way to specify resource requirements for the ops-log sidecar
+	// +optional
+	Resources v1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // EndpointAddress is a tuple that describes a single IP address or host name. This is a subset of
 // Kubernetes's v1.EndpointAddress.
 // +structType=atomic
 type EndpointAddress struct {
-	// The IP of this endpoint. As a legacy behavior, this supports being given a DNS-adressable hostname as well.
+	// The IP of this endpoint. As a legacy behavior, this supports being given a DNS-addressable hostname as well.
 	// +optional
 	IP string `json:"ip" protobuf:"bytes,1,opt,name=ip"`
 
@@ -1622,9 +1844,101 @@ type EndpointAddress struct {
 	Hostname string `json:"hostname,omitempty" protobuf:"bytes,3,opt,name=hostname"`
 }
 
+// ProtocolSpec represents a Ceph Object Store protocol specification
+type ProtocolSpec struct {
+	// Represents RGW 'rgw_enable_apis' config option. See: https://docs.ceph.com/en/reef/radosgw/config-ref/#confval-rgw_enable_apis
+	// If no value provided then all APIs will be enabled: s3, s3website, swift, swift_auth, admin, sts, iam, notifications
+	// If enabled APIs are set, all remaining APIs will be disabled.
+	// This option overrides S3.Enabled value.
+	// +optional
+	// +nullable
+	EnableAPIs []ObjectStoreAPI `json:"enableAPIs,omitempty"`
+
+	// The spec for S3
+	// +optional
+	// +nullable
+	S3 *S3Spec `json:"s3,omitempty"`
+
+	// The spec for Swift
+	// +optional
+	// +nullable
+	Swift *SwiftSpec `json:"swift"`
+}
+
+// +kubebuilder:validation:Enum=s3;s3website;swift;swift_auth;admin;sts;iam;notifications
+type ObjectStoreAPI string
+
+// S3Spec represents Ceph Object Store specification for the S3 API
+type S3Spec struct {
+	// Deprecated: use protocol.enableAPIs instead.
+	// Whether to enable S3. This defaults to true (even if protocols.s3 is not present in the CRD). This maintains backwards compatibility – by default S3 is enabled.
+	// +nullable
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+	// Whether to use Keystone for authentication. This option maps directly to the rgw_s3_auth_use_keystone option. Enabling it allows generating S3 credentials via an OpenStack API call, see the docs. If not given, the defaults of the corresponding RGW option apply.
+	// +nullable
+	// +optional
+	AuthUseKeystone *bool `json:"authUseKeystone,omitempty"`
+}
+
+// SwiftSpec represents Ceph Object Store specification for the Swift API
+type SwiftSpec struct {
+	// Whether or not the Swift account name should be included in the Swift API URL. If set to false (the default), then the Swift API will listen on a URL formed like http://host:port/<rgw_swift_url_prefix>/v1. If set to true, the Swift API URL will be http://host:port/<rgw_swift_url_prefix>/v1/AUTH_<account_name>. You must set this option to true (and update the Keystone service catalog) if you want radosgw to support publicly-readable containers and temporary URLs.
+	// +nullable
+	// +optional
+	AccountInUrl *bool `json:"accountInUrl,omitempty"`
+	// The URL prefix for the Swift API, to distinguish it from the S3 API endpoint. The default is swift, which makes the Swift API available at the URL http://host:port/swift/v1 (or http://host:port/swift/v1/AUTH_%(tenant_id)s if rgw swift account in url is enabled).
+	// +nullable
+	// +optional
+	UrlPrefix *string `json:"urlPrefix,omitempty"`
+	// Enables the Object Versioning of OpenStack Object Storage API. This allows clients to put the X-Versions-Location attribute on containers that should be versioned.
+	// +nullable
+	// +optional
+	VersioningEnabled *bool `json:"versioningEnabled,omitempty"`
+}
+
+// AuthSpec represents the authentication protocol configuration of a Ceph Object Store Gateway
+type AuthSpec struct {
+	// The spec for Keystone
+	// +optional
+	// +nullable
+	Keystone *KeystoneSpec `json:"keystone,omitempty"`
+}
+
+// KeystoneSpec represents the Keystone authentication configuration of a Ceph Object Store Gateway
+type KeystoneSpec struct {
+	// The URL for the Keystone server.
+	Url string `json:"url"`
+	// The name of the secret containing the credentials for the service user account used by RGW. It has to be in the same namespace as the object store resource.
+	ServiceUserSecretName string `json:"serviceUserSecretName"`
+	// The roles requires to serve requests.
+	AcceptedRoles []string `json:"acceptedRoles"`
+	// Create new users in their own tenants of the same name. Possible values are true, false, swift and s3. The latter have the effect of splitting the identity space such that only the indicated protocol will use implicit tenants.
+	// +optional
+	ImplicitTenants ImplicitTenantSetting `json:"implicitTenants,omitempty"`
+	// The maximum number of entries in each Keystone token cache.
+	// +optional
+	// +nullable
+	TokenCacheSize *int `json:"tokenCacheSize,omitempty"`
+	// The number of seconds between token revocation checks.
+	// +optional
+	// +nullable
+	RevocationInterval *int `json:"revocationInterval,omitempty"`
+}
+
+type ImplicitTenantSetting string
+
+const (
+	ImplicitTenantSwift   ImplicitTenantSetting = "swift"
+	ImplicitTenantS3      ImplicitTenantSetting = "s3"
+	ImplicitTenantTrue    ImplicitTenantSetting = "true"
+	ImplicitTenantFalse   ImplicitTenantSetting = "false"
+	ImplicitTenantDefault ImplicitTenantSetting = ""
+)
+
 // ZoneSpec represents a Ceph Object Store Gateway Zone specification
 type ZoneSpec struct {
-	// RGW Zone the Object Store is in
+	// CephObjectStoreZone name this CephObjectStore is part of
 	Name string `json:"name"`
 }
 
@@ -1656,14 +1970,44 @@ type ObjectEndpoints struct {
 
 // ObjectStoreHostingSpec represents the hosting settings for the object store
 type ObjectStoreHostingSpec struct {
-	// A list of DNS names in which bucket can be accessed via virtual host path. These names need to valid according RFC-1123.
-	// Each domain requires wildcard support like ingress loadbalancer.
-	// Do not include the wildcard itself in the list of hostnames (e.g. use "mystore.example.com" instead of "*.mystore.example.com").
-	// Add all hostnames including user-created Kubernetes Service endpoints to the list.
-	// CephObjectStore Service Endpoints and CephObjectZone customEndpoints are automatically added to the list.
-	// The feature is supported only for Ceph v18 and later versions.
+	// AdvertiseEndpoint is the default endpoint Rook will return for resources dependent on this
+	// object store. This endpoint will be returned to CephObjectStoreUsers, Object Bucket Claims,
+	// and COSI Buckets/Accesses.
+	// By default, Rook returns the endpoint for the object store's Kubernetes service using HTTPS
+	// with `gateway.securePort` if it is defined (otherwise, HTTP with `gateway.port`).
+	// +nullable
+	// +optional
+	AdvertiseEndpoint *ObjectEndpointSpec `json:"advertiseEndpoint,omitempty"`
+	// A list of DNS host names on which object store gateways will accept client S3 connections.
+	// When specified, object store gateways will reject client S3 connections to hostnames that are
+	// not present in this list, so include all endpoints.
+	// The object store's advertiseEndpoint and Kubernetes service endpoint, plus CephObjectZone
+	// `customEndpoints` are automatically added to the list but may be set here again if desired.
+	// Each DNS name must be valid according RFC-1123.
+	// If the DNS name corresponds to an endpoint with DNS wildcard support, do not include the
+	// wildcard itself in the list of hostnames.
+	// E.g., use "mystore.example.com" instead of "*.mystore.example.com".
 	// +optional
 	DNSNames []string `json:"dnsNames,omitempty"`
+}
+
+// ObjectEndpointSpec represents an object store endpoint
+type ObjectEndpointSpec struct {
+	// DnsName is the DNS name (in RFC-1123 format) of the endpoint.
+	// If the DNS name corresponds to an endpoint with DNS wildcard support, do not include the
+	// wildcard itself in the list of hostnames.
+	// E.g., use "mystore.example.com" instead of "*.mystore.example.com".
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	DnsName string `json:"dnsName"`
+	// Port is the port on which S3 connections can be made for this endpoint.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +required
+	Port int32 `json:"port"`
+	// UseTls defines whether the endpoint uses TLS (HTTPS) or not (HTTP).
+	// +required
+	UseTls bool `json:"useTls"`
 }
 
 // +genclient
@@ -1694,6 +2038,15 @@ type ObjectStoreUserStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// +optional
+	// +nullable
+	Keys []SecretReference `json:"keys,omitempty"`
+}
+
+type SecretReference struct {
+	v1.SecretReference `json:",secretReference"`
+	UID                types.UID `json:"uid,omitempty"`
+	ResourceVersion    string    `json:"resourceVersion,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -1719,6 +2072,10 @@ type ObjectStoreUserSpec struct {
 	// +optional
 	// +nullable
 	Quotas *ObjectUserQuotaSpec `json:"quotas,omitempty"`
+	// Allows specifying credentials for the user. If not provided, the operator
+	// will generate them.
+	// +optional
+	Keys []ObjectUserKey `json:"keys,omitempty"`
 	// The namespace where the parent CephCluster and CephObjectStore are found
 	// +optional
 	ClusterNamespace string `json:"clusterNamespace,omitempty"`
@@ -1764,7 +2121,7 @@ type ObjectUserCapSpec struct {
 	Info string `json:"info,omitempty"`
 	// +optional
 	// +kubebuilder:validation:Enum={"*","read","write","read, write"}
-	// Add capabilities for user to send request to RGW Cache API header. Documented in https://docs.ceph.com/en/quincy/radosgw/rgw-cache/#cache-api
+	// Add capabilities for user to send request to RGW Cache API header. Documented in https://docs.ceph.com/en/latest/radosgw/rgw-cache/#cache-api
 	AMZCache string `json:"amz-cache,omitempty"`
 	// +optional
 	// +kubebuilder:validation:Enum={"*","read","write","read, write"}
@@ -1807,6 +2164,15 @@ type ObjectUserQuotaSpec struct {
 	// +optional
 	// +nullable
 	MaxObjects *int64 `json:"maxObjects,omitempty"`
+}
+
+// ObjectUserKey defines a set of rgw user access credentials to be retrieved
+// from secret resources.
+type ObjectUserKey struct {
+	// Secret key selector for the access_key (commonly referred to as AWS_ACCESS_KEY_ID).
+	AccessKeyRef *v1.SecretKeySelector `json:"accessKeyRef,omitempty"`
+	// Secret key selector for the secret_key (commonly referred to as AWS_SECRET_ACCESS_KEY).
+	SecretKeyRef *v1.SecretKeySelector `json:"secretKeyRef,omitempty"`
 }
 
 // +genclient
@@ -1872,7 +2238,7 @@ type CephObjectZoneGroupList struct {
 
 // ObjectZoneGroupSpec represent the spec of an ObjectZoneGroup
 type ObjectZoneGroupSpec struct {
-	//The display name for the ceph users
+	// The display name for the ceph users
 	Realm string `json:"realm"`
 }
 
@@ -1903,14 +2269,16 @@ type CephObjectZoneList struct {
 
 // ObjectZoneSpec represent the spec of an ObjectZone
 type ObjectZoneSpec struct {
-	//The display name for the ceph users
+	// The display name for the ceph users
 	ZoneGroup string `json:"zoneGroup"`
 
 	// The metadata pool settings
+	// +optional
 	// +nullable
 	MetadataPool PoolSpec `json:"metadataPool"`
 
 	// The data pool settings
+	// +optional
 	// +nullable
 	DataPool PoolSpec `json:"dataPool"`
 
@@ -1967,6 +2335,8 @@ type BucketTopicStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// +optional
+	Secrets []SecretReference `json:"secrets,omitempty"`
 }
 
 // CephBucketTopicList represents a list Ceph Object Store Bucket Notification Topics
@@ -2055,6 +2425,17 @@ type KafkaEndpointSpec struct {
 	// +kubebuilder:default=broker
 	// +optional
 	AckLevel string `json:"ackLevel,omitempty"`
+	// The authentication mechanism for this topic (PLAIN/SCRAM-SHA-512/SCRAM-SHA-256/GSSAPI/OAUTHBEARER)
+	// +kubebuilder:validation:Enum=PLAIN;SCRAM-SHA-512;SCRAM-SHA-256;GSSAPI;OAUTHBEARER
+	// +kubebuilder:default=PLAIN
+	// +optional
+	Mechanism string `json:"mechanism,omitempty"`
+	// The kafka user name to use for authentication
+	// +optional
+	UserSecretRef *corev1.SecretKeySelector `json:"userSecretRef,omitempty"`
+	// The kafka password to use for authentication
+	// +optional
+	PasswordSecretRef *corev1.SecretKeySelector `json:"passwordSecretRef,omitempty"`
 }
 
 // +genclient
@@ -2336,9 +2717,10 @@ type SSSDSidecar struct {
 	SSSDConfigFile SSSDSidecarConfigFile `json:"sssdConfigFile"`
 
 	// AdditionalFiles defines any number of additional files that should be mounted into the SSSD
-	// sidecar. These files may be referenced by the sssd.conf config file.
+	// sidecar with a directory root of `/etc/sssd/rook-additional/`.
+	// These files may be referenced by the sssd.conf config file.
 	// +optional
-	AdditionalFiles []SSSDSidecarAdditionalFile `json:"additionalFiles,omitempty"`
+	AdditionalFiles AdditionalVolumeMounts `json:"additionalFiles,omitempty"`
 
 	// Resources allow specifying resource requests/limits on the SSSD sidecar container.
 	// +optional
@@ -2366,11 +2748,13 @@ type SSSDSidecarConfigFile struct {
 	VolumeSource *ConfigFileVolumeSource `json:"volumeSource,omitempty"`
 }
 
-// SSSDSidecarAdditionalFile represents the source from where additional files for the the SSSD
-// configuration should come from and are made available.
-type SSSDSidecarAdditionalFile struct {
-	// SubPath defines the sub-path in `/etc/sssd/rook-additional/` where the additional file(s)
-	// will be placed. Each subPath definition must be unique and must not contain ':'.
+// AdditionalVolumeMount represents the source from where additional files in pod containers
+// should come from and what subdirectory they are made available in.
+type AdditionalVolumeMount struct {
+	// SubPath defines the sub-path (subdirectory) of the directory root where the volumeSource will
+	// be mounted. All files/keys in the volume source's volume will be mounted to the subdirectory.
+	// This is not the same as the Kubernetes `subPath` volume mount option.
+	// Each subPath definition must be unique and must not contain ':'.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern=`^[^:]+$`
@@ -2379,11 +2763,13 @@ type SSSDSidecarAdditionalFile struct {
 	// VolumeSource accepts a pared down version of the standard Kubernetes VolumeSource for the
 	// additional file(s) like what is normally used to configure Volumes for a Pod. Fore example, a
 	// ConfigMap, Secret, or HostPath. Each VolumeSource adds one or more additional files to the
-	// SSSD sidecar container in the `/etc/sssd/rook-additional/<subPath>` directory.
-	// Be aware that some files may need to have a specific file mode like 0600 due to requirements
-	// by SSSD for some files. For example, CA or TLS certificates.
+	// container `<directory-root>/<subPath>` directory.
+	// Be aware that some files may need to have a specific file mode like 0600 due to application
+	// requirements. For example, CA or TLS certificates.
 	VolumeSource *ConfigFileVolumeSource `json:"volumeSource"`
 }
+
+type AdditionalVolumeMounts []AdditionalVolumeMount
 
 // NetworkSpec for Ceph includes backward compatibility code
 // +kubebuilder:validation:XValidation:message="at least one network selector must be specified when using multus",rule="!has(self.provider) || (self.provider != 'multus' || (self.provider == 'multus' && size(self.selectors) > 0))"
@@ -2391,7 +2777,7 @@ type SSSDSidecarAdditionalFile struct {
 type NetworkSpec struct {
 	// Provider is what provides network connectivity to the cluster e.g. "host" or "multus".
 	// If the Provider is updated from being empty to "host" on a running cluster, then the operator will automatically fail over all the mons to apply the "host" network settings.
-	// +kubebuilder:validation:XValidation:message="network provider must be disabled (reverted to empty string) before a new provider is enabled",rule="self == '' || self == oldSelf"
+	// +kubebuilder:validation:XValidation:message="network provider must be disabled (reverted to empty string) before a new provider is enabled",rule="self == '' || oldSelf == '' || self == oldSelf"
 	// +nullable
 	// +optional
 	Provider NetworkProviderType `json:"provider,omitempty"`
@@ -2401,7 +2787,7 @@ type NetworkSpec struct {
 	// other network providers.
 	//
 	// Valid keys are "public" and "cluster". Refer to Ceph networking documentation for more:
-	// https://docs.ceph.com/en/reef/rados/configuration/network-config-ref/
+	// https://docs.ceph.com/en/latest/rados/configuration/network-config-ref/
 	//
 	// Refer to Multus network annotation documentation for help selecting values:
 	// https://github.com/k8snetworkplumbingwg/multus-cni/blob/master/docs/how-to-use.md#run-pod-with-network-annotation
@@ -2555,10 +2941,7 @@ type DisruptionManagementSpec struct {
 	// +optional
 	OSDMaintenanceTimeout time.Duration `json:"osdMaintenanceTimeout,omitempty"`
 
-	// PGHealthCheckTimeout is the time (in minutes) that the operator will wait for the placement groups to become
-	// healthy (active+clean) after a drain was completed and OSDs came back up. Rook will continue with the next drain
-	// if the timeout exceeds. It only works if managePodBudgets is true.
-	// No values or 0 means that the operator will wait until the placement groups are healthy before unblocking the next drain.
+	// DEPRECATED: PGHealthCheckTimeout is no longer implemented
 	// +optional
 	PGHealthCheckTimeout time.Duration `json:"pgHealthCheckTimeout,omitempty"`
 
@@ -2805,6 +3188,9 @@ type StorageScopeSpec struct {
 	// +optional
 	UseAllNodes bool `json:"useAllNodes,omitempty"`
 	// +optional
+	// Whether to always schedule OSDs on a node even if the node is not currently scheduleable or ready
+	ScheduleAlways bool `json:"scheduleAlways,omitempty"`
+	// +optional
 	OnlyApplyOSDPlacement bool `json:"onlyApplyOSDPlacement,omitempty"`
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +nullable
@@ -2814,6 +3200,9 @@ type StorageScopeSpec struct {
 	// +nullable
 	// +optional
 	StorageClassDeviceSets []StorageClassDeviceSet `json:"storageClassDeviceSets,omitempty"`
+	// Migration handles the OSD migration
+	// +optional
+	Migration Migration `json:"migration,omitempty"`
 	// +optional
 	Store OSDStore `json:"store,omitempty"`
 	// +optional
@@ -2824,6 +3213,41 @@ type StorageScopeSpec struct {
 	// User needs to manually restart the OSD pod if they manage to fix the underlying OSD flapping issue before the restart interval.
 	// The sleep will be disabled if this interval is set to 0.
 	FlappingRestartIntervalHours int `json:"flappingRestartIntervalHours"`
+	// FullRatio is the ratio at which the cluster is considered full and ceph will stop accepting writes. Default is 0.95.
+	// +kubebuilder:validation:Minimum=0.0
+	// +kubebuilder:validation:Maximum=1.0
+	// +optional
+	// +nullable
+	FullRatio *float64 `json:"fullRatio,omitempty"`
+	// NearFullRatio is the ratio at which the cluster is considered nearly full and will raise a ceph health warning. Default is 0.85.
+	// +kubebuilder:validation:Minimum=0.0
+	// +kubebuilder:validation:Maximum=1.0
+	// +optional
+	// +nullable
+	NearFullRatio *float64 `json:"nearFullRatio,omitempty"`
+	// BackfillFullRatio is the ratio at which the cluster is too full for backfill. Backfill will be disabled if above this threshold. Default is 0.90.
+	// +kubebuilder:validation:Minimum=0.0
+	// +kubebuilder:validation:Maximum=1.0
+	// +optional
+	// +nullable
+	BackfillFullRatio *float64 `json:"backfillFullRatio,omitempty"`
+	// Whether to allow updating the device class after the OSD is initially provisioned
+	// +optional
+	AllowDeviceClassUpdate bool `json:"allowDeviceClassUpdate,omitempty"`
+	// Whether Rook will resize the OSD CRUSH weight when the OSD PVC size is increased.
+	// This allows cluster data to be rebalanced to make most effective use of new OSD space.
+	// The default is false since data rebalancing can cause temporary cluster slowdown.
+	// +optional
+	AllowOsdCrushWeightUpdate bool `json:"allowOsdCrushWeightUpdate,omitempty"`
+}
+
+// Migration handles the OSD migration
+type Migration struct {
+	// A user confirmation to migrate the OSDs. It destroys each OSD one at a time, cleans up the backing disk
+	// and prepares OSD with same ID on that disk
+	// +optional
+	// +kubebuilder:validation:Pattern=`^$|^yes-really-migrate-osds$`
+	Confirmation string `json:"confirmation,omitempty"`
 }
 
 // OSDStore is the backend storage type used for creating the OSDs
@@ -2905,7 +3329,7 @@ type Placement struct {
 	// the triple <key,value,effect> using the matching operator <operator>
 	// +optional
 	Tolerations []v1.Toleration `json:"tolerations,omitempty"`
-	// TopologySpreadConstraint specifies how to spread matching pods among the given topology
+	// TopologySpreadConstraints specifies how to spread matching pods among the given topology
 	// +optional
 	TopologySpreadConstraints []v1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 }
@@ -2977,6 +3401,9 @@ type StorageClassDeviceSet struct {
 
 // CephFilesystemSubVolumeGroup represents a Ceph Filesystem SubVolumeGroup
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Filesystem",type=string,JSONPath=`.spec.filesystemName`,description="Name of the CephFileSystem"
+// +kubebuilder:printcolumn:name="Quota",type=string,JSONPath=`.spec.quota`
+// +kubebuilder:printcolumn:name="Pinning",type=string,JSONPath=`.status.info.pinning`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:subresource:status
 type CephFilesystemSubVolumeGroup struct {
@@ -3016,6 +3443,12 @@ type CephFilesystemSubVolumeGroupSpec struct {
 	// only one out of (export, distributed, random) can be set at a time
 	// +optional
 	Pinning CephFilesystemSubVolumeGroupSpecPinning `json:"pinning,omitempty"`
+	// Quota size of the Ceph Filesystem subvolume group.
+	// +optional
+	Quota *resource.Quantity `json:"quota,omitempty"`
+	// The data pool name for the Ceph Filesystem subvolume group layout, if the default CephFS pool is not desired.
+	// +optional
+	DataPoolName string `json:"dataPoolName"`
 }
 
 // CephFilesystemSubVolumeGroupSpecPinning represents the pinning configuration of SubVolumeGroup
@@ -3053,8 +3486,10 @@ type CephFilesystemSubVolumeGroupStatus struct {
 // +genclient
 // +genclient:noStatus
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-
 // CephBlockPoolRadosNamespace represents a Ceph BlockPool Rados Namespace
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="BlockPool",type=string,JSONPath=`.spec.blockPoolName`,description="Name of the Ceph BlockPool"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:subresource:status
 type CephBlockPoolRadosNamespace struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -3076,6 +3511,29 @@ type CephBlockPoolRadosNamespaceList struct {
 	Items           []CephBlockPoolRadosNamespace `json:"items"`
 }
 
+// RadosNamespaceMirroring represents the mirroring configuration of CephBlockPoolRadosNamespace
+type RadosNamespaceMirroring struct {
+	// RemoteNamespace is the name of the CephBlockPoolRadosNamespace on the secondary cluster CephBlockPool
+	// +optional
+	RemoteNamespace *string `json:"remoteNamespace"`
+	// Mode is the mirroring mode; either pool or image.
+	// +kubebuilder:validation:Enum="";pool;image
+	Mode RadosNamespaceMirroringMode `json:"mode"`
+	// SnapshotSchedules is the scheduling of snapshot for mirrored images
+	// +optional
+	SnapshotSchedules []SnapshotScheduleSpec `json:"snapshotSchedules,omitempty"`
+}
+
+// RadosNamespaceMirroringMode represents the mode of the RadosNamespace
+type RadosNamespaceMirroringMode string
+
+const (
+	// RadosNamespaceMirroringModePool represents the pool mode
+	RadosNamespaceMirroringModePool RadosNamespaceMirroringMode = "pool"
+	// RadosNamespaceMirroringModeImage represents the image mode
+	RadosNamespaceMirroringModeImage RadosNamespaceMirroringMode = "image"
+)
+
 // CephBlockPoolRadosNamespaceSpec represents the specification of a CephBlockPool Rados Namespace
 type CephBlockPoolRadosNamespaceSpec struct {
 	// The name of the CephBlockPoolRadosNamespaceSpec namespace. If not set, the default is the name of the CR.
@@ -3086,6 +3544,9 @@ type CephBlockPoolRadosNamespaceSpec struct {
 	// the CephBlockPool CR.
 	// +kubebuilder:validation:XValidation:message="blockPoolName is immutable",rule="self == oldSelf"
 	BlockPoolName string `json:"blockPoolName"`
+	// Mirroring configuration of CephBlockPoolRadosNamespace
+	// +optional
+	Mirroring *RadosNamespaceMirroring `json:"mirroring,omitempty"`
 }
 
 // CephBlockPoolRadosNamespaceStatus represents the Status of Ceph BlockPool
@@ -3096,6 +3557,13 @@ type CephBlockPoolRadosNamespaceStatus struct {
 	// +optional
 	// +nullable
 	Info map[string]string `json:"info,omitempty"`
+	// +optional
+	MirroringStatus *MirroringStatusSpec `json:"mirroringStatus,omitempty"`
+	// +optional
+	MirroringInfo *MirroringInfoSpec `json:"mirroringInfo,omitempty"`
+	// +optional
+	SnapshotScheduleStatus *SnapshotScheduleStatusSpec `json:"snapshotScheduleStatus,omitempty"`
+	Conditions             []Condition                 `json:"conditions,omitempty"`
 }
 
 // Represents the source of a volume to mount.

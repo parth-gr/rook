@@ -21,21 +21,23 @@ import (
 	"os"
 	"testing"
 
+	csiopv1a1 "github.com/ceph/ceph-csi-operator/api/v1alpha1"
+	"github.com/coreos/pkg/capnslog"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
 	rookclient "github.com/rook/rook/pkg/client/clientset/versioned/fake"
 	"github.com/rook/rook/pkg/client/clientset/versioned/scheme"
 	"github.com/rook/rook/pkg/clusterd"
+	opcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
 	"github.com/rook/rook/pkg/operator/ceph/csi"
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	testop "github.com/rook/rook/pkg/operator/test"
 	exectest "github.com/rook/rook/pkg/util/exec/test"
-
-	"github.com/coreos/pkg/capnslog"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -54,9 +56,13 @@ func TestCephBlockPoolRadosNamespaceController(t *testing.T) {
 	// A cephBlockPoolRadosNamespace resource with metadata and spec.
 	cephBlockPoolRadosNamespace := &cephv1.CephBlockPoolRadosNamespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			UID:       types.UID("c47cac40-9bee-4d52-823b-ccd803ba5bfe"),
+			Name:       name,
+			Namespace:  namespace,
+			UID:        types.UID("c47cac40-9bee-4d52-823b-ccd803ba5bfe"),
+			Finalizers: []string{"cephblockpoolradosnamespace.ceph.rook.io"},
+		},
+		TypeMeta: metav1.TypeMeta{
+			Kind: "CephBlockPoolRadosNamespace",
 		},
 		Spec: cephv1.CephBlockPoolRadosNamespaceSpec{
 			BlockPoolName: namespace,
@@ -99,6 +105,8 @@ func TestCephBlockPoolRadosNamespaceController(t *testing.T) {
 		scheme:           s,
 		context:          c,
 		opManagerContext: ctx,
+		opConfig:         opcontroller.OperatorConfig{Image: "ceph/ceph:v14.2.9"},
+		recorder:         record.NewFakeRecorder(5),
 	}
 
 	// Mock request to simulate Reconcile() being called on an event for a
@@ -115,10 +123,17 @@ func TestCephBlockPoolRadosNamespaceController(t *testing.T) {
 			Name:      namespace,
 			Namespace: namespace,
 		},
+		Spec: cephv1.ClusterSpec{
+			CephVersion: cephv1.CephVersionSpec{
+				Image:           "ceph/ceph:v20.0.0",
+				ImagePullPolicy: v1.PullIfNotPresent,
+			},
+		},
 		Status: cephv1.ClusterStatus{
 			Phase: "",
 			CephVersion: &cephv1.ClusterVersion{
-				Version: "14.2.9-0",
+				Version: "20.0.0-0",
+				Image:   "ceph/ceph:v20.0.0",
 			},
 			CephStatus: &cephv1.CephStatus{
 				Health: "",
@@ -128,6 +143,9 @@ func TestCephBlockPoolRadosNamespaceController(t *testing.T) {
 	s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephCluster{}, &cephv1.CephClusterList{})
 
 	t.Run("error - no ceph cluster", func(t *testing.T) {
+		// Create pool for updating status
+		_, err := c.RookClientset.CephV1().CephBlockPoolRadosNamespaces(namespace).Create(ctx, cephBlockPoolRadosNamespace, metav1.CreateOptions{})
+		assert.NoError(t, err)
 		res, err := r.Reconcile(ctx, req)
 		assert.NoError(t, err)
 		assert.True(t, res.Requeue)
@@ -138,7 +156,11 @@ func TestCephBlockPoolRadosNamespaceController(t *testing.T) {
 		// Create a fake client to mock API calls.
 		cl = fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(object...).Build()
 		// Create a ReconcileCephBlockPoolRadosNamespace object with the scheme and fake client.
-		r = &ReconcileCephBlockPoolRadosNamespace{client: cl, scheme: s, context: c, opManagerContext: context.TODO()}
+		r = &ReconcileCephBlockPoolRadosNamespace{
+			client: cl, scheme: s, context: c, opManagerContext: context.TODO(),
+			recorder: record.NewFakeRecorder(5),
+			opConfig: opcontroller.OperatorConfig{Image: "ceph/ceph:v14.2.9"},
+		}
 		res, err := r.Reconcile(ctx, req)
 		assert.NoError(t, err)
 		assert.True(t, res.Requeue)
@@ -156,7 +178,7 @@ func TestCephBlockPoolRadosNamespaceController(t *testing.T) {
 			Phase: "",
 		},
 	}
-
+	cephBlockPool.Spec.StatusCheck.Mirror.Disabled = true
 	t.Run("error - ceph blockpool not ready", func(t *testing.T) {
 		res, err := r.Reconcile(ctx, req)
 		assert.NoError(t, err)
@@ -195,6 +217,9 @@ func TestCephBlockPoolRadosNamespaceController(t *testing.T) {
 				if args[0] == "namespace" && args[1] == "create" {
 					return "", nil
 				}
+				if args[0] == "mirror" && args[1] == "pool" {
+					return `{"mode":"disabled"}`, nil
+				}
 
 				return "", nil
 			},
@@ -204,10 +229,13 @@ func TestCephBlockPoolRadosNamespaceController(t *testing.T) {
 		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephBlockPoolList{})
 		// Create a ReconcileCephBlockPoolRadosNamespace object with the scheme and fake client.
 		r = &ReconcileCephBlockPoolRadosNamespace{
-			client:           cl,
-			scheme:           s,
-			context:          c,
-			opManagerContext: context.TODO(),
+			client:                 cl,
+			scheme:                 s,
+			context:                c,
+			opManagerContext:       context.TODO(),
+			opConfig:               opcontroller.OperatorConfig{Image: "ceph/ceph:v14.2.9"},
+			radosNamespaceContexts: make(map[string]*mirrorHealth),
+			recorder:               record.NewFakeRecorder(5),
 		}
 
 		// Enable CSI
@@ -239,21 +267,28 @@ func TestCephBlockPoolRadosNamespaceController(t *testing.T) {
 
 	t.Run("success - external mode csi config is updated", func(t *testing.T) {
 		cephCluster.Spec.External.Enable = true
+		csiOpClientProfile := &csiopv1a1.ClientProfile{}
+
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephBlockPoolList{}, &csiopv1a1.ClientProfile{}, &csiopv1a1.ClientProfile{})
 		objects := []runtime.Object{
 			cephBlockPoolRadosNamespace,
 			cephCluster,
+			cephBlockPool,
+			csiOpClientProfile,
 		}
+
 		// Create a fake client to mock API calls.
 		cl = fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objects...).Build()
 		c.Client = cl
 
-		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephBlockPoolList{})
 		// Create a ReconcileCephBlockPoolRadosNamespace object with the scheme and fake client.
 		r = &ReconcileCephBlockPoolRadosNamespace{
 			client:           cl,
 			scheme:           s,
 			context:          c,
 			opManagerContext: ctx,
+			opConfig:         opcontroller.OperatorConfig{Image: "ceph/ceph:v14.2.9"},
+			recorder:         record.NewFakeRecorder(5),
 		}
 
 		// Enable CSI
@@ -280,6 +315,316 @@ func TestCephBlockPoolRadosNamespaceController(t *testing.T) {
 		assert.NotEmpty(t, cm.Data[csi.ConfigKey])
 		assert.Contains(t, cm.Data[csi.ConfigKey], "clusterID")
 		assert.Contains(t, cm.Data[csi.ConfigKey], name)
+		cephCluster.Spec.External.Enable = false
+	})
+
+	t.Run("test rbd rados namespace mirroring enabled and blockpool mirroring disabled", func(t *testing.T) {
+		remoteNamespace := ""
+		cephBlockPoolRadosNamespace.Spec.Mirroring = &cephv1.RadosNamespaceMirroring{
+			RemoteNamespace: &remoteNamespace,
+			Mode:            "image",
+		}
+		objects := []runtime.Object{
+			cephBlockPoolRadosNamespace,
+			cephCluster,
+			cephBlockPool,
+		}
+		// Create a fake client to mock API calls.
+		cl = fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objects...).Build()
+		c.Client = cl
+
+		executor = &exectest.MockExecutor{
+			MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
+				if args[0] == "namespace" && args[1] == "create" {
+					return "", nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" {
+					return `{"mode":""}`, nil
+				}
+
+				return "", nil
+			},
+		}
+		c.Executor = executor
+
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephBlockPoolList{})
+		// Create a ReconcileCephBlockPoolRadosNamespace object with the scheme and fake client.
+		r = &ReconcileCephBlockPoolRadosNamespace{
+			client:                 cl,
+			scheme:                 s,
+			context:                c,
+			opManagerContext:       context.TODO(),
+			opConfig:               opcontroller.OperatorConfig{Image: "ceph/ceph:v14.2.9"},
+			radosNamespaceContexts: make(map[string]*mirrorHealth),
+			recorder:               record.NewFakeRecorder(5),
+		}
+
+		res, err := r.Reconcile(ctx, req)
+		assert.Error(t, err)
+		assert.False(t, res.Requeue)
+	})
+
+	t.Run("test rbd rados namespace mirroring enabled and blockpool mirroring is also enabled but empty rados namespace", func(t *testing.T) {
+		remoteNamespace := ""
+		cephBlockPoolRadosNamespace.Spec.Mirroring = &cephv1.RadosNamespaceMirroring{
+			RemoteNamespace: &remoteNamespace,
+			Mode:            "image",
+		}
+		cephBlockPool.Spec.Mirroring.Enabled = true
+		objects := []runtime.Object{
+			cephBlockPoolRadosNamespace,
+			cephCluster,
+			cephBlockPool,
+		}
+		// Create a fake client to mock API calls.
+		cl = fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objects...).Build()
+		c.Client = cl
+
+		executor = &exectest.MockExecutor{
+			MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
+				if args[0] == "namespace" && args[1] == "create" {
+					return "", nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" {
+					return `{"mode":""}`, nil
+				}
+
+				return "", nil
+			},
+		}
+		c.Executor = executor
+
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephBlockPoolList{})
+		// Create a ReconcileCephBlockPoolRadosNamespace object with the scheme and fake client.
+		r = &ReconcileCephBlockPoolRadosNamespace{
+			client:                 cl,
+			scheme:                 s,
+			context:                c,
+			opManagerContext:       context.TODO(),
+			opConfig:               opcontroller.OperatorConfig{Image: "ceph/ceph:v14.2.9"},
+			radosNamespaceContexts: make(map[string]*mirrorHealth),
+			recorder:               record.NewFakeRecorder(5),
+		}
+
+		res, err := r.Reconcile(ctx, req)
+		assert.NoError(t, err)
+		assert.False(t, res.Requeue)
+	})
+
+	t.Run("test rbd rados namespace mirroring enabled and blockpool mirroring is also enabled and non empty rados namespace but less ceph version", func(t *testing.T) {
+		cephCluster.Status.CephVersion.Version = "14.2.9"
+		remoteNamespace := "test-1"
+		cephBlockPoolRadosNamespace.Spec.Mirroring = &cephv1.RadosNamespaceMirroring{
+			RemoteNamespace: &remoteNamespace,
+			Mode:            "image",
+		}
+		cephBlockPool.Spec.Mirroring.Enabled = true
+		objects := []runtime.Object{
+			cephBlockPoolRadosNamespace,
+			cephCluster,
+			cephBlockPool,
+		}
+		// Create a fake client to mock API calls.
+		cl = fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objects...).Build()
+		c.Client = cl
+
+		executor = &exectest.MockExecutor{
+			MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
+				if args[0] == "namespace" && args[1] == "create" {
+					return "", nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" && args[2] == "enable" {
+					assert.Equal(t, cephBlockPoolRadosNamespace.Spec.Mirroring.RemoteNamespace, args[6])
+					return "", nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" && args[2] == "info" {
+					return `{}`, nil
+				}
+				return "", nil
+			},
+		}
+		c.Executor = executor
+
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephBlockPoolList{})
+		// Create a ReconcileCephBlockPoolRadosNamespace object with the scheme and fake client.
+		r = &ReconcileCephBlockPoolRadosNamespace{
+			client:                 cl,
+			scheme:                 s,
+			context:                c,
+			opManagerContext:       context.TODO(),
+			opConfig:               opcontroller.OperatorConfig{Image: "ceph/ceph:v14.2.9"},
+			radosNamespaceContexts: make(map[string]*mirrorHealth),
+			recorder:               record.NewFakeRecorder(5),
+		}
+
+		res, err := r.Reconcile(ctx, req)
+		assert.Error(t, err)
+		assert.False(t, res.Requeue)
+		cephCluster.Status.CephVersion.Version = "20.0.0"
+	})
+
+	t.Run("test rbd rados namespace mirroring enabled and blockpool mirroring is also enabled and non empty rados namespace and correct ceph version", func(t *testing.T) {
+		remoteNamespace := "test-1"
+		cephBlockPoolRadosNamespace.Spec.Mirroring = &cephv1.RadosNamespaceMirroring{
+			RemoteNamespace: &remoteNamespace,
+			Mode:            "image",
+		}
+		cephBlockPool.Spec.Mirroring.Enabled = true
+		objects := []runtime.Object{
+			cephBlockPoolRadosNamespace,
+			cephCluster,
+			cephBlockPool,
+		}
+		// Create a fake client to mock API calls.
+		cl = fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objects...).Build()
+		c.Client = cl
+
+		executor = &exectest.MockExecutor{
+			MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
+				if args[0] == "namespace" && args[1] == "create" {
+					return "", nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" && args[2] == "enable" {
+					assert.Equal(t, *cephBlockPoolRadosNamespace.Spec.Mirroring.RemoteNamespace, args[6])
+					return "", nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" && args[2] == "info" {
+					return `{}`, nil
+				}
+				return "", nil
+			},
+		}
+		c.Executor = executor
+
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephBlockPoolList{})
+		// Create a ReconcileCephBlockPoolRadosNamespace object with the scheme and fake client.
+		r = &ReconcileCephBlockPoolRadosNamespace{
+			client:                 cl,
+			scheme:                 s,
+			context:                c,
+			opManagerContext:       context.TODO(),
+			opConfig:               opcontroller.OperatorConfig{Image: "ceph/ceph:v14.2.9"},
+			radosNamespaceContexts: make(map[string]*mirrorHealth),
+			recorder:               record.NewFakeRecorder(5),
+		}
+
+		res, err := r.Reconcile(ctx, req)
+		assert.NoError(t, err)
+		assert.False(t, res.Requeue)
+
+		err = r.client.Get(ctx, req.NamespacedName, cephBlockPoolRadosNamespace)
+		assert.NoError(t, err)
+		assert.Equal(t, cephv1.ConditionReady, cephBlockPoolRadosNamespace.Status.Phase)
+		assert.NotEmpty(t, cephBlockPoolRadosNamespace.Status.Info["clusterID"])
+	})
+
+	t.Run("test rbd rados namespace mirroring enabled and blockpool mirroring is also enabled and no remote rados namespace and correct ceph version", func(t *testing.T) {
+		cephBlockPoolRadosNamespace.Spec.Mirroring = &cephv1.RadosNamespaceMirroring{
+			Mode: "image",
+		}
+		cephBlockPool.Spec.Mirroring.Enabled = true
+		objects := []runtime.Object{
+			cephBlockPoolRadosNamespace,
+			cephCluster,
+			cephBlockPool,
+		}
+		// Create a fake client to mock API calls.
+		cl = fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objects...).Build()
+		c.Client = cl
+
+		executor = &exectest.MockExecutor{
+			MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
+				if args[0] == "namespace" && args[1] == "create" {
+					return "", nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" && args[2] == "enable" {
+					assert.Equal(t, string(cephBlockPoolRadosNamespace.Spec.Mirroring.Mode), args[4])
+					return "", nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" && args[2] == "info" {
+					return `{}`, nil
+				}
+				return "", nil
+			},
+		}
+		c.Executor = executor
+
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephBlockPoolList{})
+		// Create a ReconcileCephBlockPoolRadosNamespace object with the scheme and fake client.
+		r = &ReconcileCephBlockPoolRadosNamespace{
+			client:                 cl,
+			scheme:                 s,
+			context:                c,
+			opManagerContext:       context.TODO(),
+			opConfig:               opcontroller.OperatorConfig{Image: "ceph/ceph:v14.2.9"},
+			radosNamespaceContexts: make(map[string]*mirrorHealth),
+			recorder:               record.NewFakeRecorder(5),
+		}
+
+		res, err := r.Reconcile(ctx, req)
+		assert.NoError(t, err)
+		assert.False(t, res.Requeue)
+
+		err = r.client.Get(ctx, req.NamespacedName, cephBlockPoolRadosNamespace)
+		assert.NoError(t, err)
+		assert.Equal(t, cephv1.ConditionReady, cephBlockPoolRadosNamespace.Status.Phase)
+		assert.NotEmpty(t, cephBlockPoolRadosNamespace.Status.Info["clusterID"])
+	})
+
+	t.Run("test rbd rados namespace mirroring disabled", func(t *testing.T) {
+		cephBlockPoolRadosNamespace.Spec.Mirroring = nil
+
+		objects := []runtime.Object{
+			cephBlockPoolRadosNamespace,
+			cephCluster,
+			cephBlockPool,
+		}
+		// Create a fake client to mock API calls.
+		cl = fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objects...).Build()
+		c.Client = cl
+		executor = &exectest.MockExecutor{
+			MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
+				if args[0] == "namespace" && args[1] == "create" {
+					return "", nil
+				}
+				// set mode = image as it was enabled earlier
+				if args[0] == "mirror" && args[1] == "pool" && args[2] == "info" {
+					return `{"mode":"image"}`, nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" && args[2] == "status" {
+					return `{"images":[]}`, nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" && args[2] == "peer" {
+					return `{}`, nil
+				}
+				if args[0] == "mirror" && args[1] == "pool" && args[2] == "disable" {
+					assert.Equal(t, cephBlockPool.Name+"/"+cephBlockPoolRadosNamespace.Name, args[3])
+					return `{}`, nil
+				}
+				return "", nil
+			},
+		}
+		c.Executor = executor
+
+		s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephBlockPoolList{})
+		// Create a ReconcileCephBlockPoolRadosNamespace object with the scheme and fake client.
+		r = &ReconcileCephBlockPoolRadosNamespace{
+			client:                 cl,
+			scheme:                 s,
+			context:                c,
+			opManagerContext:       context.TODO(),
+			opConfig:               opcontroller.OperatorConfig{Image: "ceph/ceph:v14.2.9"},
+			radosNamespaceContexts: make(map[string]*mirrorHealth),
+			recorder:               record.NewFakeRecorder(5),
+		}
+
+		res, err := r.Reconcile(ctx, req)
+		assert.NoError(t, err)
+		assert.False(t, res.Requeue)
+
+		err = r.client.Get(context.TODO(), req.NamespacedName, cephBlockPoolRadosNamespace)
+		assert.NoError(t, err)
+		assert.Equal(t, cephv1.ConditionReady, cephBlockPoolRadosNamespace.Status.Phase)
 	})
 }
 
@@ -288,4 +633,45 @@ func Test_buildClusterID(t *testing.T) {
 	cephBlockPoolRadosNamespace := &cephv1.CephBlockPoolRadosNamespace{ObjectMeta: metav1.ObjectMeta{Namespace: "rook-ceph", Name: longName}, Spec: cephv1.CephBlockPoolRadosNamespaceSpec{BlockPoolName: "replicapool"}}
 	clusterID := buildClusterID(cephBlockPoolRadosNamespace)
 	assert.Equal(t, "2a74e5201e6ff9d15916ce2109c4f868", clusterID)
+}
+
+func TestGetRadosNamespaceName(t *testing.T) {
+	tests := []struct {
+		name string
+		args cephv1.CephBlockPoolRadosNamespace
+		want string
+	}{
+		{
+			"implicit-namespace",
+			cephv1.CephBlockPoolRadosNamespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "cr-name1"},
+				Spec:       cephv1.CephBlockPoolRadosNamespaceSpec{Name: cephv1.ImplicitNamespaceKey},
+			},
+			cephv1.ImplicitNamespaceVal,
+		},
+		{
+			"valid-namespace",
+			cephv1.CephBlockPoolRadosNamespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "cr-name2"},
+				Spec:       cephv1.CephBlockPoolRadosNamespaceSpec{Name: "valid-ns"},
+			},
+			"valid-ns",
+		},
+		{
+			"empty-namespace",
+			cephv1.CephBlockPoolRadosNamespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "cr-name3"},
+				Spec:       cephv1.CephBlockPoolRadosNamespaceSpec{},
+			},
+			"cr-name3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cephv1.GetRadosNamespaceName(&tt.args); got != tt.want {
+				t.Errorf("GetRadosNamespaceName() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }

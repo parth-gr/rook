@@ -126,7 +126,7 @@ func (b *BucketOperation) GetAccessKey(obcName string) (string, error) {
 	args := []string{"get", "secret", obcName, "-o", "jsonpath={@.data.AWS_ACCESS_KEY_ID}"}
 	AccessKey, err := b.k8sh.Kubectl(args...)
 	if err != nil {
-		return "", fmt.Errorf("Unable to find access key -- %s", err)
+		return "", fmt.Errorf("unable to find access key -- %s", err)
 	}
 	decode, _ := b64.StdEncoding.DecodeString(AccessKey)
 	return string(decode), nil
@@ -136,11 +136,10 @@ func (b *BucketOperation) GetSecretKey(obcName string) (string, error) {
 	args := []string{"get", "secret", obcName, "-o", "jsonpath={@.data.AWS_SECRET_ACCESS_KEY}"}
 	SecretKey, err := b.k8sh.Kubectl(args...)
 	if err != nil {
-		return "", fmt.Errorf("Unable to find secret key-- %s", err)
+		return "", fmt.Errorf("unable to find secret key-- %s", err)
 	}
 	decode, _ := b64.StdEncoding.DecodeString(SecretKey)
 	return string(decode), nil
-
 }
 
 // Checks whether MaxObject is updated for ob
@@ -157,11 +156,7 @@ func (b *BucketOperation) CheckBucketNotificationSetonRGW(namespace, storeName, 
 	s3endpoint, _ := helper.ObjectClient.GetEndPointUrl(namespace, storeName)
 	s3AccessKey, _ := helper.BucketClient.GetAccessKey(obcName)
 	s3SecretKey, _ := helper.BucketClient.GetSecretKey(obcName)
-	if tlsEnabled {
-		s3client, err = rgw.NewInsecureS3Agent(s3AccessKey, s3SecretKey, s3endpoint, true)
-	} else {
-		s3client, err = rgw.NewS3Agent(s3AccessKey, s3SecretKey, s3endpoint, true, nil)
-	}
+	s3client, err = rgw.NewS3Agent(s3AccessKey, s3SecretKey, s3endpoint, true, nil, tlsEnabled, nil)
 	if err != nil {
 		logger.Infof("failed to s3client due to %v", err)
 		return false

@@ -112,7 +112,7 @@ setup_minikube_env() {
     minikube_driver="$(get_minikube_driver)"
     echo "Setting up minikube env for profile '$ROOK_PROFILE_NAME' (using $minikube_driver driver)"
     $MINIKUBE delete
-    $MINIKUBE start --disk-size="$MINIKUBE_DISK_SIZE" --extra-disks="$MINIKUBE_EXTRA_DISKS" --driver "$minikube_driver" -n "$MINIKUBE_NODES"
+    $MINIKUBE start --disk-size="$MINIKUBE_DISK_SIZE" --extra-disks="$MINIKUBE_EXTRA_DISKS" --driver "$minikube_driver" -n "$MINIKUBE_NODES" $ROOK_MINIKUBE_EXTRA_ARGS
     eval "$($MINIKUBE docker-env)"
 }
 
@@ -167,7 +167,7 @@ enable_rook_orchestrator() {
 
 enable_monitoring() {
     echo "Enabling monitoring"
-    $KUBECTL create -f https://raw.githubusercontent.com/coreos/prometheus-operator/v0.71.1/bundle.yaml
+    $KUBECTL create -f https://raw.githubusercontent.com/coreos/prometheus-operator/v0.82.0/bundle.yaml
     $KUBECTL wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus-operator --timeout=30s
     $KUBECTL apply -f monitoring/rbac.yaml
     $KUBECTL apply -f monitoring/service-monitor.yaml

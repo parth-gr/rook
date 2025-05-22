@@ -84,7 +84,7 @@ func removeOSD(clusterdContext *clusterd.Context, clusterInfo *client.ClusterInf
 		logger.Errorf("failed to exclude osd.%d out of the crush map. %v", osdID, err)
 	}
 
-	// Check we can remove the OSD
+	// Check if we can safely remove the OSD
 	// Loop forever until the osd is safe-to-destroy
 	for {
 		isSafeToDestroy, err := client.OsdSafeToDestroy(clusterdContext, clusterInfo, osdID)
@@ -112,8 +112,8 @@ func removeOSD(clusterdContext *clusterd.Context, clusterInfo *client.ClusterInf
 				break
 			}
 			// Else we wait until the OSD can be removed
-			logger.Warningf("osd.%d is NOT ok to destroy, retrying in 1m until success", osdID)
-			time.Sleep(1 * time.Minute)
+			logger.Warningf("osd.%d is NOT ok to destroy, retrying in 15s until success", osdID)
+			time.Sleep(15 * time.Second)
 		}
 	}
 
@@ -248,14 +248,11 @@ func archiveCrash(clusterdContext *clusterd.Context, clusterInfo *client.Cluster
 }
 
 // DestroyOSD fetches the OSD to be replaced based on the ID and then destroys that OSD and zaps the backing device
-func DestroyOSD(context *clusterd.Context, clusterInfo *client.ClusterInfo, id int, isPVC, isEncrypted bool) (*oposd.OSDReplaceInfo, error) {
-	var block string
+func DestroyOSD(context *clusterd.Context, clusterInfo *client.ClusterInfo, id int, isPVC bool) (*oposd.OSDInfo, error) {
 	osdInfo, err := GetOSDInfoById(context, clusterInfo, id)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to get OSD info for OSD.%d", id)
 	}
-
-	block = osdInfo.BlockPath
 
 	logger.Infof("destroying osd.%d", osdInfo.ID)
 	destroyOSDArgs := []string{"osd", "destroy", fmt.Sprintf("osd.%d", osdInfo.ID), "--yes-i-really-mean-it"}
@@ -265,32 +262,35 @@ func DestroyOSD(context *clusterd.Context, clusterInfo *client.ClusterInfo, id i
 	}
 	logger.Infof("successfully destroyed osd.%d", osdInfo.ID)
 
-	if isPVC && isEncrypted {
-		// remove the dm device
+	// in case of OSD on PVs, fetch the actual device name for the mounted /mnt/<pvc-name>
+	if isPVC {
 		pvcName := os.Getenv(oposd.PVCNameEnvVarName)
-		target := oposd.EncryptionDMName(pvcName, oposd.DmcryptBlockType)
-		err = removeEncryptedDevice(context, target)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to remove dm device %q", target)
+
+		// remove the dm device
+		if osdInfo.Encrypted {
+			target := oposd.EncryptionDMName(pvcName, oposd.DmcryptBlockType)
+			err = removeEncryptedDevice(context, target)
+			if err != nil {
+				return nil, errors.Wrapf(err, "failed to remove dm device %q", target)
+			}
 		}
-		// ceph-volume uses `/dev/mapper/*` for encrypted disks. This is not a block device. So we need to fetch the corresponding
-		// block device for cleanup using `ceph-volume lvm zap`
+		// fetch the actual device for cleanup
 		blockPath := fmt.Sprintf("/mnt/%s", pvcName)
 		diskInfo, err := clusterd.PopulateDeviceInfo(blockPath, context.Executor)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to get device info for %q", blockPath)
 		}
-		block = diskInfo.RealPath
+		osdInfo.BlockPath = diskInfo.RealPath
 	}
 
-	logger.Infof("zap OSD.%d path %q", osdInfo.ID, block)
-	output, err := context.Executor.ExecuteCommandWithCombinedOutput("stdbuf", "-oL", "ceph-volume", "lvm", "zap", block, "--destroy")
+	logger.Infof("zap OSD.%d path %q", osdInfo.ID, osdInfo.BlockPath)
+	output, err := context.Executor.ExecuteCommandWithCombinedOutput("stdbuf", "-oL", "ceph-volume", "lvm", "zap", osdInfo.BlockPath, "--destroy")
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to zap osd.%d path %q. %s.", osdInfo.ID, block, output)
+		return nil, errors.Wrapf(err, "failed to zap osd.%d path %q. %s.", osdInfo.ID, osdInfo.BlockPath, output)
 	}
 
 	logger.Infof("%s\n", output)
-	logger.Infof("successfully zapped osd.%d path %q", osdInfo.ID, block)
+	logger.Infof("successfully zapped osd.%d path %q", osdInfo.ID, osdInfo.BlockPath)
 
-	return &oposd.OSDReplaceInfo{ID: osdInfo.ID, Path: block}, nil
+	return osdInfo, nil
 }

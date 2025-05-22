@@ -128,6 +128,7 @@ metadata:
   name: my-cluster
   namespace: rook-ceph # namespace:cluster
 spec:
+  # If there are multiple clusters, the directory must be unique for each cluster.
   dataDirHostPath: /var/lib/rook
   mon:
     count: 1
@@ -149,7 +150,7 @@ spec:
   crashCollector:
     disable: false
   cephVersion:
-    image: quay.io/ceph/ceph:v18
+    image: quay.io/ceph/ceph:v19
     allowUnsupported: false
   skipUpgradeChecks: false
   continueUpgradeAfterChecksEvenIfNotHealthy: false
@@ -187,7 +188,6 @@ spec:
   disruptionManagement:
     managePodBudgets: true
     osdMaintenanceTimeout: 30
-    pgHealthCheckTimeout: 0
   cephConfig:
     global:
       mon_warn_on_pool_no_redundancy: "false"

@@ -24,6 +24,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"time"
 
@@ -50,7 +51,8 @@ const (
 	// cryptographicLength of the key.
 	cryptographicLength = 256
 
-	//nolint:gosec, value not credential, just configuration keys.
+	// value not credential, just configuration keys.
+	//nolint:gosec
 	kmipEndpoint         = "KMIP_ENDPOINT"
 	kmipTLSServerName    = "TLS_SERVER_NAME"
 	kmipReadTimeOut      = "READ_TIMEOUT"
@@ -81,7 +83,7 @@ type kmipKMS struct {
 	writeTimeout uint8
 }
 
-// InitKKMIP initializes the KMIP KMS.
+// InitKMIP initializes the KMIP KMS.
 func InitKMIP(config map[string]string) (*kmipKMS, error) {
 	kms := &kmipKMS{}
 
@@ -97,14 +99,20 @@ func InitKMIP(config map[string]string) (*kmipKMS, error) {
 	kms.readTimeout = kmipDefaultReadTimeout
 	timeout, err := strconv.Atoi(GetParam(config, kmipReadTimeOut))
 	if err == nil {
-		kms.readTimeout = uint8(timeout)
+		if timeout > math.MaxUint8 {
+			return nil, fmt.Errorf("read timeout %d is too big", timeout)
+		}
+		kms.readTimeout = uint8(timeout) // nolint:gosec // G115 : already checked if too big
 	}
 
 	// optional
 	kms.writeTimeout = kmipDefaultWriteTimeout
 	timeout, err = strconv.Atoi(GetParam(config, kmipWriteTimeOut))
 	if err == nil {
-		kms.writeTimeout = uint8(timeout)
+		if timeout > math.MaxUint8 {
+			return nil, fmt.Errorf("read timeout %d is too big", timeout)
+		}
+		kms.writeTimeout = uint8(timeout) // nolint:gosec // G115 : already checked if too big
 	}
 
 	caCert := GetParam(config, KmipCACert)

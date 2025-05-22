@@ -16,14 +16,10 @@ include ../image.mk
 
 # ====================================================================================
 # Image Build Options
+CEPH_VERSION ?= v19.2.2-20250409
 
-ifeq ($(GOARCH),amd64)
-CEPH_VERSION ?= v18.2.2-20240311
-else
-CEPH_VERSION ?= v18.2.2-20240311
-endif
 REGISTRY_NAME = quay.io
-BASEIMAGE = $(REGISTRY_NAME)/ceph/ceph-$(GOARCH):$(CEPH_VERSION)
+BASEIMAGE = $(REGISTRY_NAME)/ceph/ceph:$(CEPH_VERSION)
 CEPH_IMAGE = $(BUILD_REGISTRY)/ceph-$(GOARCH)
 OPERATOR_SDK_VERSION = v1.25.0
 # TODO: update to yq v4 - v3 end of life in Aug 2021 ; v4 removes the 'yq delete' cmd and changes syntax
@@ -35,14 +31,19 @@ ifeq ($(BUILD_CONTEXT_DIR),)
 BUILD_CONTEXT_DIR := $(shell mktemp -d)
 endif
 
+
+ifeq ($(GOARCH),amd64)
+S5CMD_ARCH = Linux-64bit
+else
+S5CMD_ARCH = Linux-arm64
+endif
+
+# s5cmd's version
+S5CMD_VERSION = 2.3.0
+
 # Note: as of version 1.3 of operator-sdk, the url format changed to:
 # ${OPERATOR_SDK_DL_URL}/operator-sdk_${OS}_${ARCH}
 # (see: https://sdk.operatorframework.io/docs/installation/)
-S5CMD_ARCH = Linux-64bit
-
-# s5cmd's version
-S5CMD_VERSION = 2.2.1
-
 OPERATOR_SDK := $(TOOLS_HOST_DIR)/operator-sdk-$(OPERATOR_SDK_VERSION)
 YQv3 := $(TOOLS_HOST_DIR)/yq-$(YQv3_VERSION)
 export OPERATOR_SDK YQv3
@@ -60,10 +61,9 @@ do.build:
 	@cp -r $(MANIFESTS_DIR)/monitoring $(BUILD_CONTEXT_DIR)/ceph-monitoring
 	@mkdir -p $(BUILD_CONTEXT_DIR)/rook-external/test-data
 	@cp $(MANIFESTS_DIR)/create-external-cluster-resources.* $(BUILD_CONTEXT_DIR)/rook-external/
-	@cp ../../tests/ceph-status-out $(BUILD_CONTEXT_DIR)/rook-external/test-data/
 	@cd $(BUILD_CONTEXT_DIR) && $(SED_IN_PLACE) 's|BASEIMAGE|$(BASEIMAGE)|g' Dockerfile
 	@if [ -z "$(BUILD_CONTAINER_IMAGE)" ]; then\
-		$(DOCKERCMD) build $(BUILD_ARGS) \
+		$(DOCKERCMD) build --platform linux/$(GOARCH) $(BUILD_ARGS) \
 		--build-arg S5CMD_VERSION=$(S5CMD_VERSION) \
 		--build-arg S5CMD_ARCH=$(S5CMD_ARCH) \
 		-t $(CEPH_IMAGE) \

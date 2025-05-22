@@ -3,7 +3,6 @@ package mds
 import (
 	"bytes"
 	_ "embed"
-	"fmt"
 	"html/template"
 
 	"github.com/pkg/errors"
@@ -29,15 +28,14 @@ const (
 	mdsSuccessThreshold int32 = 1
 )
 
-var (
-	//go:embed livenessprobe.sh
-	mdsLivenessProbeCmdScript string
-)
+//go:embed livenessprobe.sh
+var mdsLivenessProbeCmdScript string
 
 type mdsLivenessProbeConfig struct {
 	MdsId          string
 	FilesystemName string
 	Keyring        string
+	CmdTimeout     int32
 }
 
 func renderProbe(mdsLivenessProbeConfigValue mdsLivenessProbeConfig) (string, error) {
@@ -64,6 +62,7 @@ func generateMDSLivenessProbeExecDaemon(daemonID, filesystemName, keyring string
 		MdsId:          daemonID,
 		FilesystemName: filesystemName,
 		Keyring:        keyring,
+		CmdTimeout:     mdsCmdTimeout,
 	}
 
 	mdsLivenessProbeCmd, err := renderProbe(mdsLivenessProbeConfigValue)
@@ -75,8 +74,6 @@ func generateMDSLivenessProbeExecDaemon(daemonID, filesystemName, keyring string
 		ProbeHandler: v1.ProbeHandler{
 			Exec: &v1.ExecAction{
 				Command: []string{
-					"timeout",
-					fmt.Sprintf("%d", mdsCmdTimeout),
 					"sh",
 					"-c",
 					mdsLivenessProbeCmd,

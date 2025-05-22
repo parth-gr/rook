@@ -83,7 +83,7 @@ type ReconcileCephRBDMirror struct {
 
 // peerSpec represents peer details
 type peerSpec struct {
-	info      *cephv1.PoolMirroringInfo
+	info      *cephv1.MirroringInfo
 	poolName  string
 	direction string
 }
@@ -107,6 +107,21 @@ func newReconciler(mgr manager.Manager, context *clusterd.Context, opManagerCont
 	}
 }
 
+func watchOwnedCoreObject[T client.Object](c controller.Controller, mgr manager.Manager, obj T) error {
+	return c.Watch(
+		source.Kind(
+			mgr.GetCache(),
+			obj,
+			handler.TypedEnqueueRequestForOwner[T](
+				mgr.GetScheme(),
+				mgr.GetRESTMapper(),
+				&cephv1.CephRBDMirror{},
+			),
+			opcontroller.WatchPredicateForNonCRDObject[T](&cephv1.CephRBDMirror{TypeMeta: controllerTypeMeta}, mgr.GetScheme()),
+		),
+	)
+}
+
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// Create a new controller
 	c, err := controller.New(controllerName, mgr, controller.Options{Reconciler: r})
@@ -116,25 +131,21 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	logger.Info("successfully started")
 
 	// Watch for changes on the cephRBDMirror CRD object
-	s := source.Kind(
-		mgr.GetCache(),
-		&cephv1.CephRBDMirror{TypeMeta: controllerTypeMeta})
-	err = c.Watch(s, &handler.EnqueueRequestForObject{}, opcontroller.WatchControllerPredicate())
+	err = c.Watch(
+		source.Kind(
+			mgr.GetCache(),
+			&cephv1.CephRBDMirror{TypeMeta: controllerTypeMeta},
+			&handler.TypedEnqueueRequestForObject[*cephv1.CephRBDMirror]{},
+			opcontroller.WatchControllerPredicate[*cephv1.CephRBDMirror](mgr.GetScheme()),
+		),
+	)
 	if err != nil {
 		return err
 	}
 
 	// Watch all other resources
 	for _, t := range objectsToWatch {
-		ownerRequest := handler.EnqueueRequestForOwner(
-			mgr.GetScheme(),
-			mgr.GetRESTMapper(),
-			&cephv1.CephRBDMirror{},
-		)
-		err = c.Watch(
-			source.Kind(mgr.GetCache(), t),
-			ownerRequest,
-			opcontroller.WatchPredicateForNonCRDObject(&cephv1.CephRBDMirror{TypeMeta: controllerTypeMeta}, mgr.GetScheme()))
+		err = watchOwnedCoreObject(c, mgr, t)
 		if err != nil {
 			return err
 		}
@@ -251,7 +262,6 @@ func (r *ReconcileCephRBDMirror) reconcile(request reconcile.Request) (reconcile
 	// Return and do not requeue
 	logger.Debug("done reconciling ceph rbd mirror")
 	return reconcile.Result{}, *cephRBDMirror, nil
-
 }
 
 func (r *ReconcileCephRBDMirror) reconcileCreateCephRBDMirror(cephRBDMirror *cephv1.CephRBDMirror) (reconcile.Result, error) {

@@ -2,12 +2,17 @@
 title: Cleanup
 ---
 
+Rook provides the following clean up options:
+
+1. [Uninstall: Clean up the entire cluster and delete all data](#cleaning-up-a-cluster)
+2. [Force delete individual resources](#force-delete-resources)
+
 ## Cleaning up a Cluster
 
 To tear down the cluster, the following resources need to be cleaned up:
 
 * The resources created under Rook's namespace (default `rook-ceph`) such as the Rook operator created by `operator.yaml` and the cluster CR `cluster.yaml`.
-* `/var/lib/rook/rook-ceph`: Path on each host in the cluster where configuration is stored by the ceph mons and osds
+* All files under `dataDirHostPath` (default `/var/lib/rook`): Path on each host in the cluster where configuration is stored by ceph daemons.
 * Devices used by the OSDs
 
 If the default namespaces or paths such as `dataDirHostPath` are changed in the example yaml files, these namespaces and paths will need to be changed throughout these instructions.
@@ -39,31 +44,32 @@ kubectl delete storageclass csi-cephfs
 
 1. To instruct Rook to wipe the host paths and volumes, edit the `CephCluster` and add the `cleanupPolicy`:
 
-```console
-kubectl -n rook-ceph patch cephcluster rook-ceph --type merge -p '{"spec":{"cleanupPolicy":{"confirmation":"yes-really-destroy-data"}}}'
-```
+    ```console
+    kubectl -n rook-ceph patch cephcluster rook-ceph --type merge -p '{"spec":{"cleanupPolicy":{"confirmation":"yes-really-destroy-data"}}}'
+    ```
 
-Once the cleanup policy is enabled, any new configuration changes in the CephCluster will be blocked. Nothing will happen until the deletion of the CR is requested, so this `cleanupPolicy` change can still be reverted if needed.
+    Once the cleanup policy is enabled, any new configuration changes in the CephCluster will be blocked. Nothing will happen until the deletion of the CR is requested, so this `cleanupPolicy` change can still be reverted if needed.
 
-Checkout more details about the `cleanupPolicy` [here](../CRDs/Cluster/ceph-cluster-crd.md#cleanup-policy)
+    Checkout more details about the `cleanupPolicy` [here](../CRDs/Cluster/ceph-cluster-crd.md#cleanup-policy)
 
 2. Delete the `CephCluster` CR.
 
-```console
-kubectl -n rook-ceph delete cephcluster rook-ceph
-```
+    ```console
+    kubectl -n rook-ceph delete cephcluster rook-ceph
+    ```
 
 3. Verify that the cluster CR has been deleted before continuing to the next step.
 
-```console
-kubectl -n rook-ceph get cephcluster
-```
+    ```console
+    kubectl -n rook-ceph get cephcluster
+    ```
 
-If the `cleanupPolicy` was applied, wait for the `rook-ceph-cleanup` jobs to be completed on all the nodes.
-These jobs will perform the following operations:
+4. If the `cleanupPolicy` was applied, wait for the `rook-ceph-cleanup` jobs to be completed on all the nodes.
 
-* Delete the namespace directory under `dataDirHostPath`, for example `/var/lib/rook/rook-ceph`, on all the nodes
-* Wipe the data on the drives on all the nodes where OSDs were running in this cluster
+    These jobs will perform the following operations:
+
+    * Delete the all files under `dataDirHostPath` on all the nodes
+    * Wipe the data on the drives on all the nodes where OSDs were running in this cluster
 
 !!! note
     The cleanup jobs might not start if the resources created on top of Rook Cluster are not deleted completely.
@@ -86,7 +92,7 @@ kubectl delete -f crds.yaml
 
 If the `cleanupPolicy` was not added to the CephCluster CR before deleting the cluster, these manual steps are required to tear down the cluster.
 
-Connect to each machine and delete the namespace directory under `dataDirHostPath`, for example `/var/lib/rook/rook-ceph`.
+Connect to each machine and delete all files under `dataDirHostPath`.
 
 #### Zapping Devices
 
@@ -102,8 +108,12 @@ DISK="/dev/sdX"
 # Zap the disk to a fresh, usable state (zap-all is important, b/c MBR has to be clean)
 sgdisk --zap-all $DISK
 
-# Wipe a large portion of the beginning of the disk to remove more LVM metadata that may be present
-dd if=/dev/zero of="$DISK" bs=1M count=100 oflag=direct,dsync
+# Wipe portions of the disk to remove more LVM metadata that may be present
+dd if=/dev/zero of="$DISK" bs=1K count=200 oflag=direct,dsync seek=0 # Clear at offset 0
+dd if=/dev/zero of="$DISK" bs=1K count=200 oflag=direct,dsync seek=$((1 * 1024**2)) # Clear at offset 1GB
+dd if=/dev/zero of="$DISK" bs=1K count=200 oflag=direct,dsync seek=$((10 * 1024**2)) # Clear at offset 10GB
+dd if=/dev/zero of="$DISK" bs=1K count=200 oflag=direct,dsync seek=$((100 * 1024**2)) # Clear at offset 100GB
+dd if=/dev/zero of="$DISK" bs=1K count=200 oflag=direct,dsync seek=$((1000 * 1024**2)) # Clear at offset 1000GB
 
 # SSDs may be better cleaned with blkdiscard instead of dd
 blkdiscard $DISK
@@ -179,3 +189,24 @@ If the operator is not able to remove the finalizers (i.e., the operator is not 
 kubectl -n rook-ceph patch configmap rook-ceph-mon-endpoints --type merge -p '{"metadata":{"finalizers": []}}'
 kubectl -n rook-ceph patch secrets rook-ceph-mon --type merge -p '{"metadata":{"finalizers": []}}'
 ```
+
+## Force Delete Resources
+
+To keep your data safe in the cluster, Rook disallows deleting critical cluster resources by default. To override this behavior and force delete a specific custom resource, add the annotation `rook.io/force-deletion="true"` to the resource and then delete it. Rook will start a cleanup job that will delete all the related ceph resources created by that custom resource.
+
+For example, run the following commands to clean the `CephFilesystemSubVolumeGroup` resource named `my-subvolumegroup`
+
+``` console
+kubectl -n rook-ceph annotate cephfilesystemsubvolumegroups.ceph.rook.io my-subvolumegroup rook.io/force-deletion="true"
+kubectl -n rook-ceph delete cephfilesystemsubvolumegroups.ceph.rook.io my-subvolumegroup
+```
+
+Once the cleanup job is completed successfully, Rook will remove the finalizers from the deleted custom resource.
+
+This cleanup is supported only for the following custom resources:
+
+| Custom Resource                      | Ceph Resources to be cleaned up |
+| --------                             | ------- |
+| CephFilesystemSubVolumeGroup         | CSI stored RADOS OMAP details for pvc/volumesnapshots, subvolume snapshots, subvolume clones, subvolumes |
+| CephBlockPoolRadosNamespace          | Images and snapshots in the RADOS namespace|
+| CephBlockPool                        | Images and snapshots in the BlockPool|

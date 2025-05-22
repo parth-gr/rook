@@ -49,6 +49,7 @@ type updateConfig struct {
 	numUpdatesNeeded    int              // the number of OSDs that needed updating
 	deployments         *existenceList   // these OSDs have existing deployments
 	osdsToSkipReconcile sets.Set[string] // these OSDs should not be updated during reconcile
+	osdDesiredState     map[int]*OSDInfo // the desired state of the OSDs determined during the reconcile
 }
 
 func (c *Cluster) newUpdateConfig(
@@ -64,6 +65,7 @@ func (c *Cluster) newUpdateConfig(
 		queue.Len(),
 		deployments,
 		osdsToSkipReconcile,
+		map[int]*OSDInfo{},
 	}
 }
 
@@ -79,6 +81,19 @@ func (c *updateConfig) updateExistingOSDs(errs *provisionErrors) {
 	if c.doneUpdating() {
 		return // no more OSDs to update
 	}
+	if !c.cluster.spec.SkipUpgradeChecks && c.cluster.spec.UpgradeOSDRequiresHealthyPGs {
+		pgHealthMsg, pgClean, err := cephclient.IsClusterClean(c.cluster.context, c.cluster.clusterInfo, c.cluster.spec.DisruptionManagement.PGHealthyRegex)
+		if err != nil {
+			logger.Warningf("failed to check PGs status to update OSDs, will try updating it again later. %v", err)
+			return
+		}
+		if !pgClean {
+			logger.Infof("PGs are not healthy to update OSDs, will try updating it again later. PGs status: %q", pgHealthMsg)
+			return
+		}
+		logger.Infof("PGs are healthy to proceed updating OSDs. %v", pgHealthMsg)
+	}
+
 	osdIDQuery, _ := c.queue.Pop()
 
 	var osdIDs []int
@@ -129,6 +144,7 @@ func (c *updateConfig) updateExistingOSDs(errs *provisionErrors) {
 			errs.addError("failed to update OSD %d. failed to extract OSD info from existing deployment %q. %v", osdID, depName, err)
 			continue
 		}
+		c.osdDesiredState[osdID] = &osdInfo
 
 		if c.osdsToSkipReconcile.Has(strconv.Itoa(osdID)) {
 			logger.Warningf("Skipping update for OSD %d since labeled with %s", osdID, cephv1.SkipReconcileLabelKey)
@@ -161,7 +177,7 @@ func (c *updateConfig) updateExistingOSDs(errs *provisionErrors) {
 
 		if osdIsOnPVC(dep) {
 			logger.Infof("updating OSD %d on PVC %q", osdID, nodeOrPVCName)
-			updatedDep, err = deploymentOnPVCFunc(c.cluster, osdInfo, nodeOrPVCName, c.provisionConfig)
+			updatedDep, err = deploymentOnPVCFunc(c.cluster, &osdInfo, nodeOrPVCName, c.provisionConfig)
 			message := fmt.Sprintf("Processing OSD %d on PVC %q", osdID, nodeOrPVCName)
 			updateConditionFunc(c.cluster.clusterInfo.Context, c.cluster.context, c.cluster.clusterInfo.NamespacedName(), k8sutil.ObservedGenerationNotAvailable, cephv1.ConditionProgressing, v1.ConditionTrue, cephv1.ClusterProgressingReason, message)
 		} else {
@@ -176,7 +192,7 @@ func (c *updateConfig) updateExistingOSDs(errs *provisionErrors) {
 			}
 
 			logger.Infof("updating OSD %d on node %q", osdID, nodeOrPVCName)
-			updatedDep, err = deploymentOnNodeFunc(c.cluster, osdInfo, nodeOrPVCName, c.provisionConfig)
+			updatedDep, err = deploymentOnNodeFunc(c.cluster, &osdInfo, nodeOrPVCName, c.provisionConfig)
 			message := fmt.Sprintf("Processing OSD %d on node %q", osdID, nodeOrPVCName)
 			updateConditionFunc(c.cluster.clusterInfo.Context, c.cluster.context, c.cluster.clusterInfo.NamespacedName(), k8sutil.ObservedGenerationNotAvailable, cephv1.ConditionProgressing, v1.ConditionTrue, cephv1.ClusterProgressingReason, message)
 		}
@@ -219,15 +235,13 @@ func (c *Cluster) getOSDUpdateInfo(errs *provisionErrors) (*updateQueue, *existe
 
 	updateQueue := newUpdateQueueWithCapacity(len(deps.Items))
 	existenceList := newExistenceListWithCapacity(len(deps.Items))
-
 	for i := range deps.Items {
-		id, err := getOSDID(&deps.Items[i]) // avoid implicit memory aliasing by indexing
+		id, err := GetOSDID(&deps.Items[i]) // avoid implicit memory aliasing by indexing
 		if err != nil {
 			// add a question to the user AFTER the error text to help them recover from user error
 			errs.addError("%v. did a user create their own deployment with label %q?", selector, err)
 			continue
 		}
-
 		// all OSD deployments should be marked as existing
 		existenceList.Add(id)
 		updateQueue.Push(id)
@@ -284,6 +298,11 @@ func (q *updateQueue) Exists(osdID int) bool {
 		}
 	}
 	return false
+}
+
+// Clear deletes all entries inside the queue
+func (q *updateQueue) Clear() {
+	q.q = q.q[:0]
 }
 
 // Remove removes the items from the queue if they exist.
@@ -355,4 +374,19 @@ func (c *Cluster) getFuncToListDeploymentsWithIDs(osdIDs []string) func() (*apps
 	return func() (*appsv1.DeploymentList, error) {
 		return c.context.Clientset.AppsV1().Deployments(c.clusterInfo.Namespace).List(c.clusterInfo.Context, listOpts)
 	}
+}
+
+// getOSDDeployments returns the list of existing OSD deployments
+func (c *Cluster) getOSDDeployments() (*appsv1.DeploymentList, error) {
+	namespace := c.clusterInfo.Namespace
+	selector := fmt.Sprintf("%s=%s", k8sutil.AppAttr, AppName)
+	listOpts := metav1.ListOptions{
+		// list only rook-ceph-osd Deployments
+		LabelSelector: selector,
+	}
+	deps, err := c.context.Clientset.AppsV1().Deployments(namespace).List(c.clusterInfo.Context, listOpts)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to query existing OSD deployments to check if they need to be updated")
+	}
+	return deps, nil
 }

@@ -23,6 +23,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -49,13 +50,15 @@ const (
 	fsidSecretNameKey = "fsid"
 	MonSecretNameKey  = "mon-secret"
 	// AdminSecretName is the name of the admin secret
-	adminSecretNameKey = "admin-secret"
+	AdminSecretNameKey = "admin-secret"
 	CephUsernameKey    = "ceph-username"
 	CephUserSecretKey  = "ceph-secret"
 	// EndpointConfigMapName is the name of the configmap with mon endpoints
 	EndpointConfigMapName = "rook-ceph-mon-endpoints"
 	// EndpointDataKey is the name of the key inside the mon configmap to get the endpoints
 	EndpointDataKey = "data"
+	// EndpointExternalMonsKey key in EndpointConfigMapName configmap containing IDs of external mons
+	EndpointExternalMonsKey = "externalMons"
 	// OutOfQuorumKey is the name of the key for tracking mons detected out of quorum
 	OutOfQuorumKey = "outOfQuorum"
 	// MaxMonIDKey is the name of the max mon id used
@@ -129,7 +132,7 @@ func CreateOrLoadClusterInfo(clusterdContext *clusterd.Context, context context.
 		if cephUsername, ok := secrets.Data[CephUsernameKey]; ok {
 			clusterInfo.CephCred.Username = string(cephUsername)
 			clusterInfo.CephCred.Secret = string(secrets.Data[CephUserSecretKey])
-		} else if adminSecretKey, ok := secrets.Data[adminSecretNameKey]; ok {
+		} else if adminSecretKey, ok := secrets.Data[AdminSecretNameKey]; ok {
 			clusterInfo.CephCred.Username = cephclient.AdminUsername
 			clusterInfo.CephCred.Secret = string(adminSecretKey)
 
@@ -141,11 +144,14 @@ func CreateOrLoadClusterInfo(clusterdContext *clusterd.Context, context context.
 		} else {
 			return nil, maxMonID, monMapping, errors.New("failed to find either the cluster admin key or the username")
 		}
+		if len(secrets.OwnerReferences) > 0 {
+			clusterInfo.OwnerInfo = k8sutil.NewOwnerInfoWithOwnerRef(&secrets.GetOwnerReferences()[0], namespace)
+		}
 		logger.Debugf("found existing monitor secrets for cluster %s", clusterInfo.Namespace)
 	}
 
 	// get the existing monitor config
-	clusterInfo.Monitors, maxMonID, monMapping, err = loadMonConfig(clusterdContext.Clientset, namespace)
+	clusterInfo.ExternalMons, clusterInfo.InternalMonitors, maxMonID, monMapping, err = loadMonConfig(clusterdContext.Clientset, namespace)
 	if err != nil {
 		return nil, maxMonID, monMapping, errors.Wrap(err, "failed to get mon config")
 	}
@@ -165,12 +171,12 @@ func CreateOrLoadClusterInfo(clusterdContext *clusterd.Context, context context.
 	// Some people might want to give the admin key
 	// The necessary users/keys/secrets will be created by Rook
 	// This is also done to allow backward compatibility
-	if clusterInfo.CephCred.Username == cephclient.AdminUsername && clusterInfo.CephCred.Secret != adminSecretNameKey {
+	if clusterInfo.CephCred.Username == cephclient.AdminUsername && clusterInfo.CephCred.Secret != AdminSecretNameKey {
 		return clusterInfo, maxMonID, monMapping, nil
 	}
 
 	// If the admin secret is "admin-secret", look for the deprecated secret that has the external creds
-	if clusterInfo.CephCred.Secret == adminSecretNameKey {
+	if clusterInfo.CephCred.Secret == AdminSecretNameKey {
 		secret, err := clusterdContext.Clientset.CoreV1().Secrets(namespace).Get(context, OperatorCreds, metav1.GetOptions{})
 		if err != nil {
 			return nil, maxMonID, monMapping, err
@@ -191,7 +197,7 @@ func createNamedClusterInfo(context *clusterd.Context, namespace string) (*cephc
 	}
 
 	dir := path.Join(context.ConfigDir, namespace)
-	if err = os.MkdirAll(dir, 0744); err != nil {
+	if err = os.MkdirAll(dir, 0o744); err != nil {
 		return nil, errors.Wrapf(err, "failed to create dir %s", dir)
 	}
 
@@ -206,7 +212,8 @@ func createNamedClusterInfo(context *clusterd.Context, namespace string) (*cephc
 		"--cap", "mon", "'allow *'",
 		"--cap", "osd", "'allow *'",
 		"--cap", "mgr", "'allow *'",
-		"--cap", "mds", "'allow'"}
+		"--cap", "mds", "'allow'",
+	}
 	adminSecret, err := genSecret(context.Executor, dir, cephclient.AdminUsername, args)
 	if err != nil {
 		return nil, err
@@ -222,6 +229,7 @@ func createNamedClusterInfo(context *clusterd.Context, namespace string) (*cephc
 		},
 	}, nil
 }
+
 func genSecret(executor exec.Executor, configDir, name string, args []string) (string, error) {
 	path := path.Join(configDir, fmt.Sprintf("%s.keyring", name))
 	path = strings.Replace(path, "..", ".", 1)
@@ -273,33 +281,34 @@ func UpdateMonsOutOfQuorum(clientset kubernetes.Interface, namespace string, mon
 }
 
 // loadMonConfig returns the monitor endpoints and maxMonID
-func loadMonConfig(clientset kubernetes.Interface, namespace string) (map[string]*cephclient.MonInfo, int, *Mapping, error) {
+func loadMonConfig(clientset kubernetes.Interface, namespace string) (extMons map[string]*cephclient.MonInfo, internalMons map[string]*cephclient.MonInfo, maxMonID int, monMapping *Mapping, err error) {
 	ctx := context.TODO()
-	monEndpointMap := map[string]*cephclient.MonInfo{}
-	maxMonID := -1
-	monMapping := &Mapping{
+	extMons = map[string]*cephclient.MonInfo{}
+	internalMons = map[string]*cephclient.MonInfo{}
+	maxMonID = -1
+	monMapping = &Mapping{
 		Schedule: map[string]*MonScheduleInfo{},
 	}
 
 	cm, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, EndpointConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		if !kerrors.IsNotFound(err) {
-			return nil, maxMonID, monMapping, err
+			return nil, nil, maxMonID, monMapping, err
 		}
 		// If the config map was not found, initialize the empty set of monitors
-		return monEndpointMap, maxMonID, monMapping, nil
+		return extMons, internalMons, maxMonID, monMapping, nil
 	}
 
 	// Parse the monitor List
 	if info, ok := cm.Data[EndpointDataKey]; ok {
-		monEndpointMap = ParseMonEndpoints(info)
+		internalMons = ParseMonEndpoints(info)
 	}
 
 	// Parse the mons that were detected out of quorum
 	if outOfQuorum, ok := cm.Data[OutOfQuorumKey]; ok && len(outOfQuorum) > 0 {
 		monNames := strings.Split(outOfQuorum, ",")
 		for _, monName := range monNames {
-			if monInfo, ok := monEndpointMap[monName]; ok {
+			if monInfo, ok := internalMons[monName]; ok {
 				monInfo.OutOfQuorum = true
 			} else {
 				logger.Warningf("did not find mon %q to set it out of quorum in the cluster info", monName)
@@ -319,7 +328,7 @@ func loadMonConfig(clientset kubernetes.Interface, namespace string) (map[string
 	}
 
 	// Make sure the max id is consistent with the current monitors
-	for _, m := range monEndpointMap {
+	for _, m := range internalMons {
 		id, _ := fullNameToIndex(m.Name)
 		if maxMonID < id {
 			maxMonID = id
@@ -333,9 +342,19 @@ func loadMonConfig(clientset kubernetes.Interface, namespace string) (map[string
 	if err != nil {
 		logger.Errorf("invalid JSON in mon mapping. %v", err)
 	}
+	// filter external mons:
+	if extMonIDsStr, ok := cm.Data[EndpointExternalMonsKey]; ok && extMonIDsStr != "" {
+		extMonIDs := strings.Split(extMonIDsStr, ",")
+		for monID, mon := range internalMons {
+			if slices.Contains(extMonIDs, monID) {
+				extMons[monID] = mon
+				delete(internalMons, monID)
+			}
+		}
+	}
 
-	logger.Debugf("loaded: maxMonID=%d, mons=%+v, assignment=%+v", maxMonID, monEndpointMap, monMapping)
-	return monEndpointMap, maxMonID, monMapping, nil
+	logger.Debugf("loaded: maxMonID=%d, extMons=%+v, mons=%+v, assignment=%+v", maxMonID, extMons, internalMons, monMapping)
+	return extMons, internalMons, maxMonID, monMapping, nil
 }
 
 // convert the mon name to the numeric mon ID
@@ -410,7 +429,7 @@ func PopulateExternalClusterInfo(cephClusterSpec *cephv1.ClusterSpec, context *c
 			time.Sleep(externalConnectionRetry)
 			continue
 		}
-		logger.Infof("found the cluster info to connect to the external cluster. will use %q to check health and monitor status. mons=%+v", clusterInfo.CephCred.Username, clusterInfo.Monitors)
+		logger.Infof("found the cluster info to connect to the external cluster. will use %q to check health and monitor status. mons=%+v", clusterInfo.CephCred.Username, clusterInfo.AllMonitors())
 		clusterInfo.OwnerInfo = ownerInfo
 
 		return clusterInfo, nil

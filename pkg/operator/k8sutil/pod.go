@@ -141,10 +141,12 @@ func AddUnreachableNodeToleration(podSpec *v1.PodSpec) {
 			tolerationSeconds = duration
 		}
 	}
-	urToleration := v1.Toleration{Key: "node.kubernetes.io/unreachable",
+	urToleration := v1.Toleration{
+		Key:               "node.kubernetes.io/unreachable",
 		Operator:          "Exists",
 		Effect:            "NoExecute",
-		TolerationSeconds: &tolerationSeconds}
+		TolerationSeconds: &tolerationSeconds,
+	}
 
 	for index, item := range podSpec.Tolerations {
 		if item.Key == "node.kubernetes.io/unreachable" {
@@ -163,7 +165,7 @@ func GetRunningPod(ctx context.Context, clientset kubernetes.Interface) (*v1.Pod
 		return nil, fmt.Errorf("cannot detect the pod name. Please provide it using the downward API in the manifest file")
 	}
 	podNamespace := os.Getenv(PodNamespaceEnvVar)
-	if podName == "" {
+	if podNamespace == "" {
 		return nil, fmt.Errorf("cannot detect the pod namespace. Please provide it using the downward API in the manifest file")
 	}
 
@@ -337,14 +339,12 @@ func SetNodeAntiAffinityForPod(pod *v1.PodSpec, requiredDuringScheduling bool, t
 	// Set pod anti-affinity rules when pod should never be
 	// co-located (e.g. HostNetworking, not AllowMultiplePerHost)
 	if requiredDuringScheduling {
-		paa.RequiredDuringSchedulingIgnoredDuringExecution =
-			append(paa.RequiredDuringSchedulingIgnoredDuringExecution, podAntiAffinity)
+		paa.RequiredDuringSchedulingIgnoredDuringExecution = append(paa.RequiredDuringSchedulingIgnoredDuringExecution, podAntiAffinity)
 	} else {
-		paa.PreferredDuringSchedulingIgnoredDuringExecution =
-			append(paa.PreferredDuringSchedulingIgnoredDuringExecution, v1.WeightedPodAffinityTerm{
-				Weight:          50,
-				PodAffinityTerm: podAntiAffinity,
-			})
+		paa.PreferredDuringSchedulingIgnoredDuringExecution = append(paa.PreferredDuringSchedulingIgnoredDuringExecution, v1.WeightedPodAffinityTerm{
+			Weight:          50,
+			PodAffinityTerm: podAntiAffinity,
+		})
 	}
 }
 

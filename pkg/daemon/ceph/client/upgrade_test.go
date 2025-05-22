@@ -62,7 +62,7 @@ func TestEnableReleaseOSDFunctionality(t *testing.T) {
 	}
 	context := &clusterd.Context{Executor: executor}
 
-	err := EnableReleaseOSDFunctionality(context, AdminTestClusterInfo("mycluster"), "quincy")
+	err := EnableReleaseOSDFunctionality(context, AdminTestClusterInfo("mycluster"), "squid")
 	assert.NoError(t, err)
 }
 
@@ -129,7 +129,7 @@ func TestDaemonMapEntry(t *testing.T) {
 	{
 		"mon": {
 			"ceph version 18.2.5 (cbff874f9007f1869bfd3821b7e33b2a6ffd4988) reef (stable)": 1,
-			"ceph version 17.2.7 (3a54b2b6d167d4a2a19e003a705696d4fe619afc) quincy (stable)": 2
+			"ceph version 19.2.0 (3a54b2b6d167d4a2a19e003a705696d4fe619afc) squid (stable)": 2
 		}
 	}`)
 
@@ -323,7 +323,7 @@ func TestOSDUpdateShouldCheckOkToStop(t *testing.T) {
 	t.Run("1 node with 3 OSDs", func(t *testing.T) {
 		lsOutput = fake.OsdLsOutput(3)
 		treeOutput = fake.OsdTreeOutput(1, 3)
-		assert.False(t, OSDUpdateShouldCheckOkToStop(context, clusterInfo))
+		assert.True(t, OSDUpdateShouldCheckOkToStop(context, clusterInfo))
 	})
 
 	t.Run("2 nodes with 1 OSD each", func(t *testing.T) {
@@ -349,6 +349,6 @@ func TestOSDUpdateShouldCheckOkToStop(t *testing.T) {
 	t.Run("0 nodes with down OSDs", func(t *testing.T) {
 		lsOutput = fake.OsdLsOutput(3)
 		treeOutput = fake.OsdTreeOutput(0, 1)
-		assert.False(t, OSDUpdateShouldCheckOkToStop(context, clusterInfo))
+		assert.True(t, OSDUpdateShouldCheckOkToStop(context, clusterInfo))
 	})
 }

@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -32,7 +34,6 @@ import (
 	"github.com/rook/rook/pkg/daemon/ceph/osd/kms"
 	cephconfig "github.com/rook/rook/pkg/operator/ceph/config"
 	"github.com/rook/rook/pkg/operator/ceph/controller"
-	cephver "github.com/rook/rook/pkg/operator/ceph/version"
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
@@ -46,6 +47,14 @@ const (
 	sseKMS             = "ssekms"
 	sseS3              = "sses3"
 	vaultPrefix        = "/v1/"
+
+	// Read Affinity settings for RGW clients to reduce cross-zone traffic
+	radosReadReplicaPolicy = "rados_replica_read_policy"
+	// read from a random OSD from the PG's active set
+	balanceReadReplicaPolicy = "balance"
+	// read from the primary OSD
+	defaultReadReplicaPolicy = "default"
+
 	//nolint:gosec // since this is not leaking any hardcoded details
 	setupVaultTokenFile = `
 set -e
@@ -70,15 +79,41 @@ chown --recursive --verbose ceph:ceph $VAULT_TOKEN_NEW_PATH
 )
 
 var (
-	cephVersionMinRGWSSES3     = cephver.CephVersion{Major: 17, Minor: 2, Extra: 3}
-	cephVersionMinRGWSSEKMSTLS = cephver.CephVersion{Major: 16, Minor: 2, Extra: 6}
-
 	//go:embed rgw-probe.sh
 	rgwProbeScriptTemplate string
+
+	rgwAPIwithoutS3 = []string{"s3website", "swift", "swift_auth", "admin", "sts", "iam", "notifications"}
+
+	// used to pass Pod name and namespaces to Pod container arguments.
+	podNameEnvVars = []v1.EnvVar{
+		{
+			Name: "POD_NS",
+			ValueFrom: &v1.EnvVarSource{
+				FieldRef: &v1.ObjectFieldSelector{
+					FieldPath: "metadata.namespace",
+				},
+			},
+		},
+		{
+			Name: "POD_NAME",
+			ValueFrom: &v1.EnvVarSource{
+				FieldRef: &v1.ObjectFieldSelector{
+					FieldPath: "metadata.name",
+				},
+			},
+		},
+	}
+	// Filename to store RGW ops log per pod.
+	// Relies on the on environment variables to get the pod name and namespace.
+	// podNameEnvVars have to be passed to to log collector container.
+	opsLogFilename    = "ops-log.$(POD_NS).$(POD_NAME).log"
+	opsLogAbsFilename = path.Join(cephconfig.VarLogCephDir, opsLogFilename)
 )
 
-type ProbeType string
-type ProtocolType string
+type (
+	ProbeType    string
+	ProtocolType string
+)
 
 const (
 	StartupProbeType   ProbeType = "startup"
@@ -93,6 +128,7 @@ type rgwProbeConfig struct {
 
 	Protocol ProtocolType
 	Port     string
+	Path     string
 }
 
 func (c *clusterConfig) createDeployment(rgwConfig *rgwConfig) (*apps.Deployment, error) {
@@ -118,6 +154,7 @@ func (c *clusterConfig) createDeployment(rgwConfig *rgwConfig) (*apps.Deployment
 			Labels:    getLabels(c.store.Name, c.store.Namespace, true),
 		},
 		Spec: apps.DeploymentSpec{
+			RevisionHistoryLimit: controller.RevisionHistoryLimit(),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: getLabels(c.store.Name, c.store.Namespace, false),
 			},
@@ -153,14 +190,25 @@ func (c *clusterConfig) makeRGWPodSpec(rgwConfig *rgwConfig) (v1.PodTemplateSpec
 		),
 		HostNetwork:        hostNetwork,
 		PriorityClassName:  c.store.Spec.Gateway.PriorityClassName,
+		SecurityContext:    &v1.PodSecurityContext{},
 		ServiceAccountName: serviceAccountName,
+	}
+
+	if opsLogSidecar := c.store.Spec.Gateway.OpsLogSidecar; opsLogSidecar != nil {
+		// Add the side-car container named ops-log
+		podSpec.Containers = append(podSpec.Containers,
+			*controller.RgwOpsLogSidecarContainer(opsLogFilename,
+				c.clusterInfo.Namespace, *c.clusterSpec, podNameEnvVars,
+				opsLogSidecar.Resources))
 	}
 
 	// If the log collector is enabled we add the side-car container
 	if c.clusterSpec.LogCollector.Enabled {
 		shareProcessNamespace := true
 		podSpec.ShareProcessNamespace = &shareProcessNamespace
-		podSpec.Containers = append(podSpec.Containers, *controller.LogCollectorContainer(getDaemonName(rgwConfig), c.clusterInfo.Namespace, *c.clusterSpec))
+		podSpec.Containers = append(podSpec.Containers,
+			*controller.LogCollectorContainer(getDaemonName(rgwConfig),
+				c.clusterInfo.Namespace, *c.clusterSpec, podNameEnvVars, opsLogAbsFilename))
 	}
 
 	// Replace default unreachable node toleration
@@ -176,7 +224,8 @@ func (c *clusterConfig) makeRGWPodSpec(rgwConfig *rgwConfig) (v1.PodTemplateSpec
 			Name: certVolumeName,
 			VolumeSource: v1.VolumeSource{
 				Secret: secretVolSrc,
-			}}
+			},
+		}
 		podSpec.Volumes = append(podSpec.Volumes, certVol)
 	}
 	// Check custom caBundle provided
@@ -189,13 +238,15 @@ func (c *clusterConfig) makeRGWPodSpec(rgwConfig *rgwConfig) (v1.PodTemplateSpec
 			Name: caBundleVolumeName,
 			VolumeSource: v1.VolumeSource{
 				Secret: customCaBundleVolSrc,
-			}}
+			},
+		}
 		podSpec.Volumes = append(podSpec.Volumes, customCaBundleVol)
 		updatedCaBundleVol := v1.Volume{
 			Name: caBundleUpdatedVolumeName,
 			VolumeSource: v1.VolumeSource{
 				EmptyDir: &v1.EmptyDirVolumeSource{},
-			}}
+			},
+		}
 		podSpec.Volumes = append(podSpec.Volumes, updatedCaBundleVol)
 		podSpec.InitContainers = append(podSpec.InitContainers,
 			c.createCaBundleUpdateInitContainer(rgwConfig))
@@ -235,7 +286,7 @@ func (c *clusterConfig) makeRGWPodSpec(rgwConfig *rgwConfig) (v1.PodTemplateSpec
 
 	// If host networking is not enabled, preferred pod anti-affinity is added to the rgw daemons
 	labels := getLabels(c.store.Name, c.store.Namespace, false)
-	k8sutil.SetNodeAntiAffinityForPod(&podSpec, c.store.Spec.IsHostNetwork(c.clusterSpec), v1.LabelHostname, labels, nil)
+	k8sutil.SetNodeAntiAffinityForPod(&podSpec, c.store.Spec.IsHostNetwork(c.clusterSpec), k8sutil.LabelHostname(), labels, nil)
 
 	podTemplateSpec := v1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
@@ -254,6 +305,10 @@ func (c *clusterConfig) makeRGWPodSpec(rgwConfig *rgwConfig) (v1.PodTemplateSpec
 			return podTemplateSpec, err
 		}
 	}
+
+	addVols, addMounts := c.store.Spec.Gateway.AdditionalVolumeMounts.GenerateVolumesAndMounts("/var/rgw/")
+	podTemplateSpec.Spec.Volumes = append(podTemplateSpec.Spec.Volumes, addVols...)
+	podTemplateSpec.Spec.Containers[0].VolumeMounts = append(podTemplateSpec.Spec.Containers[0].VolumeMounts, addMounts...)
 
 	return podTemplateSpec, nil
 }
@@ -351,7 +406,6 @@ func (c *clusterConfig) makeDaemonContainer(rgwConfig *rgwConfig) (v1.Container,
 				strings.TrimPrefix(generateCephXUser(rgwConfig.ResourceName), "client.")),
 			"--foreground",
 			cephconfig.NewFlag("rgw frontends", fmt.Sprintf("%s %s", rgwFrontendName, c.portString())),
-			cephconfig.NewFlag("host", controller.ContainerEnvVarReference(k8sutil.PodNameEnvVar)),
 			cephconfig.NewFlag("rgw-mime-types-file", mimeTypesMountPath()),
 			cephconfig.NewFlag("rgw realm", rgwConfig.Realm),
 			cephconfig.NewFlag("rgw zonegroup", rgwConfig.ZoneGroup),
@@ -394,29 +448,56 @@ func (c *clusterConfig) makeDaemonContainer(rgwConfig *rgwConfig) (v1.Container,
 		if c.store.Spec.Security.KeyManagementService.IsTokenAuthEnabled() {
 			container.Args = append(container.Args, c.sseKMSVaultTokenOptions(kmsEnabled)...)
 		}
-		if c.store.Spec.Security.KeyManagementService.IsTLSEnabled() &&
-			c.clusterInfo.CephVersion.IsAtLeast(cephVersionMinRGWSSEKMSTLS) {
+		if c.store.Spec.Security.KeyManagementService.IsTLSEnabled() {
 			container.Args = append(container.Args, c.sseKMSVaultTLSOptions(kmsEnabled)...)
 		}
 	}
+	if c.store.Spec.Gateway.OpsLogSidecar != nil {
+		container.Env = append(container.Env, podNameEnvVars...)
+		container.Args = append(container.Args,
+			cephconfig.NewFlag("rgw_enable_ops_log", "true"),
+			cephconfig.NewFlag("rgw_ops_log_file_path", opsLogAbsFilename),
+		)
+	} else {
+		// older version of Rook was using mon db to store rgw ops log config params.
+		// cleanup previous value in case if ops log was enabled in older version:
+		// TODO: only needed in Rook v1.17. remove after
+		monStore := cephconfig.GetMonStore(c.context, c.clusterInfo)
+		who := generateCephXUser(rgwConfig.ResourceName)
+		prevVal, _ := monStore.Get(who, "rgw_enable_ops_log")
+		if prevOpsEnabled, _ := strconv.ParseBool(prevVal); prevOpsEnabled {
+			err := monStore.Delete(who, "rgw_enable_ops_log")
+			if err != nil {
+				return v1.Container{}, errors.Wrapf(err, "failed to delete rgw_enable_ops_log from mon db")
+			}
+			err = monStore.Delete(who, "rgw_ops_log_file_path")
+			if err != nil {
+				return v1.Container{}, errors.Wrapf(err, "failed to delete rgw_ops_log_file_path from mon db")
+			}
+		}
+	}
 
-	s3Enabled, err := c.CheckRGWSSES3Enabled()
+	if flags := buildRGWConfigFlags(c.store); len(flags) != 0 {
+		container.Args = append(container.Args, flags...)
+	}
+
+	s3EncryptionEnabled, err := c.CheckRGWSSES3Enabled()
 	if err != nil {
 		return v1.Container{}, err
 	}
-	if s3Enabled {
+	if s3EncryptionEnabled {
 		logger.Debugf("enabliing SSE-S3. %v", c.store.Spec.Security.ServerSideEncryptionS3)
 
-		container.Args = append(container.Args, c.sseS3DefaultOptions(s3Enabled)...)
+		container.Args = append(container.Args, c.sseS3DefaultOptions(s3EncryptionEnabled)...)
 		if c.store.Spec.Security.ServerSideEncryptionS3.IsTokenAuthEnabled() {
-			container.Args = append(container.Args, c.sseS3VaultTokenOptions(s3Enabled)...)
+			container.Args = append(container.Args, c.sseS3VaultTokenOptions(s3EncryptionEnabled)...)
 		}
 		if c.store.Spec.Security.ServerSideEncryptionS3.IsTLSEnabled() {
-			container.Args = append(container.Args, c.sseS3VaultTLSOptions(s3Enabled)...)
+			container.Args = append(container.Args, c.sseS3VaultTLSOptions(s3EncryptionEnabled)...)
 		}
 	}
 
-	if s3Enabled || kmsEnabled {
+	if s3EncryptionEnabled || kmsEnabled {
 		vaultVolMount := v1.VolumeMount{Name: rgwVaultVolumeName, MountPath: rgwVaultDirName}
 		container.VolumeMounts = append(container.VolumeMounts, vaultVolMount)
 	}
@@ -428,6 +509,31 @@ func (c *clusterConfig) makeDaemonContainer(rgwConfig *rgwConfig) (v1.Container,
 	if hostingOptions != "" {
 		container.Args = append(container.Args, hostingOptions)
 	}
+
+	// set RGW read Affinity
+	isCrushLocationSet := false
+	if c.store.Spec.Gateway.ReadAffinity != nil {
+		if c.clusterInfo.CephVersion.IsAtLeastTentacle() {
+			container.Args = append(container.Args, cephconfig.NewFlag(radosReadReplicaPolicy, c.store.Spec.Gateway.ReadAffinity.Type))
+			// set crush location if `balance` and `default` mode are not set.
+			if c.store.Spec.Gateway.ReadAffinity.Type != balanceReadReplicaPolicy && c.store.Spec.Gateway.ReadAffinity.Type != defaultReadReplicaPolicy {
+				container.Command = []string{"bash", "-x", "-c", `exec radosgw --crush-location="host=${NODE_NAME//./-}" "$@"`}
+				isCrushLocationSet = true
+			}
+		} else {
+			logger.Warning("can't set RGW read affinity for ceph version below v20 (tentacle)")
+		}
+	}
+
+	if !isCrushLocationSet {
+		container.Args = append(container.Args, cephconfig.NewFlag("host", controller.ContainerEnvVarReference(k8sutil.PodNameEnvVar)))
+	}
+
+	// user configs are very last arguments so that they override what Rook might be setting before
+	for flag, val := range c.store.Spec.Gateway.RgwCommandFlags {
+		container.Args = append(container.Args, cephconfig.NewFlag(flag, val))
+	}
+
 	return container, nil
 }
 
@@ -458,11 +564,17 @@ func noLivenessProbe() *v1.Probe {
 }
 
 func (c *clusterConfig) defaultReadinessProbe() (*v1.Probe, error) {
+	probePath, disableProbe := getRGWProbePath(c.store.Spec.Protocols)
+	if disableProbe {
+		logger.Infof("disabling startup probe for %q store", c.store.Name)
+		return nil, nil
+	}
 	proto, port := c.endpointInfo()
 	cfg := rgwProbeConfig{
 		ProbeType: ReadinessProbeType,
 		Protocol:  proto,
 		Port:      port.String(),
+		Path:      probePath,
 	}
 	script, err := renderProbe(cfg)
 	if err != nil {
@@ -488,13 +600,52 @@ func (c *clusterConfig) defaultReadinessProbe() (*v1.Probe, error) {
 	return probe, nil
 }
 
+// getRGWProbePath - returns custom path for RGW probe and returns true if probe should be disabled.
+func getRGWProbePath(protocolSpec cephv1.ProtocolSpec) (path string, disable bool) {
+	enabledAPIs := buildRGWEnableAPIsConfigVal(protocolSpec)
+	if len(enabledAPIs) == 0 {
+		// all apis including s3 are enabled
+		// using default s3 Probe
+		return "", false
+	}
+	if slices.Contains(enabledAPIs, "s3") {
+		// using default s3 Probe
+		return "", false
+	}
+	if slices.Contains(enabledAPIs, "swift") {
+		// using swift api for probe
+		// calculate path for swift probe
+		prefix := "/swift/"
+		if protocolSpec.Swift != nil && protocolSpec.Swift.UrlPrefix != nil && *protocolSpec.Swift.UrlPrefix != "" {
+			prefix = *protocolSpec.Swift.UrlPrefix
+			if !strings.HasPrefix(prefix, "/") {
+				prefix = "/" + prefix
+			}
+			if !strings.HasSuffix(prefix, "/") {
+				prefix += "/"
+			}
+		}
+		prefix += "info"
+		return prefix, false
+	}
+	// both swift and s3 are disabled - disable probe.
+	return "", true
+}
+
 func (c *clusterConfig) defaultStartupProbe() (*v1.Probe, error) {
+	probePath, disableProbe := getRGWProbePath(c.store.Spec.Protocols)
+	if disableProbe {
+		logger.Infof("disabling startup probe for %q store", c.store.Name)
+		return nil, nil
+	}
 	proto, port := c.endpointInfo()
 	cfg := rgwProbeConfig{
 		ProbeType: StartupProbeType,
 		Protocol:  proto,
 		Port:      port.String(),
+		Path:      probePath,
 	}
+
 	script, err := renderProbe(cfg)
 	if err != nil {
 		return nil, err
@@ -690,9 +841,6 @@ func (c *clusterConfig) CheckRGWKMS() (bool, error) {
 
 func (c *clusterConfig) CheckRGWSSES3Enabled() (bool, error) {
 	if c.store.Spec.Security != nil && c.store.Spec.Security.ServerSideEncryptionS3.IsEnabled() {
-		if !c.clusterInfo.CephVersion.IsAtLeast(cephVersionMinRGWSSES3) {
-			return false, errors.New("minimum ceph quincy is required for AWS-SSE:S3")
-		}
 		err := kms.ValidateConnectionDetails(c.clusterInfo.Context, c.context, &c.store.Spec.Security.ServerSideEncryptionS3, c.store.Namespace)
 		if err != nil {
 			return false, err
@@ -743,7 +891,7 @@ func (c *clusterConfig) generateVolumeSourceWithTLSSecret() (*v1.SecretVolumeSou
 	// Because the Secret mount is owned by "root" and fsGroup breaks on OCP since we cannot predict it
 	// Also, we don't want to change the SCC for fsGroup to RunAsAny since it has a major broader impact
 	// Let's open the permissions a bit more so that everyone can read the cert.
-	userReadOnly := int32(0444)
+	userReadOnly := int32(0o444)
 	var secretVolSrc *v1.SecretVolumeSource
 	if c.store.Spec.Gateway.SSLCertificateRef != "" {
 		secretVolSrc = &v1.SecretVolumeSource{
@@ -770,7 +918,8 @@ func (c *clusterConfig) generateVolumeSourceWithTLSSecret() (*v1.SecretVolumeSou
 			Items: []v1.KeyToPath{
 				{Key: v1.TLSCertKey, Path: certFilename, Mode: &userReadOnly},
 				{Key: v1.TLSPrivateKeyKey, Path: certKeyFileName, Mode: &userReadOnly},
-			}}
+			},
+		}
 	} else {
 		return nil, errors.New("no TLS certificates found")
 	}
@@ -781,7 +930,7 @@ func (c *clusterConfig) generateVolumeSourceWithTLSSecret() (*v1.SecretVolumeSou
 func (c *clusterConfig) generateVolumeSourceWithCaBundleSecret() (*v1.SecretVolumeSource, error) {
 	// Keep the ca-bundle as secure as possible in the container. Give only user read perms.
 	// Same as above for generateVolumeSourceWithTLSSecret function.
-	userReadOnly := int32(0400)
+	userReadOnly := int32(0o400)
 	caBundleVolSrc := &v1.SecretVolumeSource{
 		SecretName: c.store.Spec.Gateway.CaBundleRef,
 	}
@@ -800,10 +949,10 @@ func (c *clusterConfig) generateVolumeSourceWithCaBundleSecret() (*v1.SecretVolu
 
 func (c *clusterConfig) rgwTLSSecretType(secretName string) (v1.SecretType, error) {
 	rgwTlsSecret, err := c.context.Clientset.CoreV1().Secrets(c.clusterInfo.Namespace).Get(c.clusterInfo.Context, secretName, metav1.GetOptions{})
-	if rgwTlsSecret != nil {
-		return rgwTlsSecret.Type, nil
+	if err != nil {
+		return "", errors.Wrapf(err, "failed to get Kubernetes secrets referring the TLS certificates")
 	}
-	return "", errors.Wrapf(err, "no Kubernetes secrets referring TLS certificates found")
+	return rgwTlsSecret.Type, nil
 }
 
 func getDaemonName(rgwConfig *rgwConfig) string {
@@ -906,6 +1055,46 @@ func (c *clusterConfig) sseS3VaultTLSOptions(setOptions bool) []string {
 	return rgwOptions
 }
 
+// Builds list of rgw config parameters which should be passed as CLI flags.
+// Consider set config option as flag if BOTH criteria fulfilled:
+//  1. config value is not secret
+//  2. config change requires RGW daemon restart
+//
+// Otherwise set rgw config parameter to mon database in ./config.go -> setFlagsMonConfigStore()
+// CLI flags override values from mon db: see ceph config docs: https://docs.ceph.com/en/latest/rados/configuration/ceph-conf/#config-sources
+func buildRGWConfigFlags(objectStore *cephv1.CephObjectStore) []string {
+	var res []string
+	// todo: move all flags here
+	if enableAPIs := buildRGWEnableAPIsConfigVal(objectStore.Spec.Protocols); len(enableAPIs) != 0 {
+		res = append(res, cephconfig.NewFlag("rgw_enable_apis", strings.Join(enableAPIs, ",")))
+		logger.Debugf("Enabling APIs for RGW instance %q: %s", objectStore.Name, enableAPIs)
+	}
+	return res
+}
+
+func buildRGWEnableAPIsConfigVal(protocolSpec cephv1.ProtocolSpec) []string {
+	if len(protocolSpec.EnableAPIs) != 0 {
+		// handle explicit enabledAPIS spec
+		enabledAPIs := make([]string, len(protocolSpec.EnableAPIs))
+		for i, v := range protocolSpec.EnableAPIs {
+			enabledAPIs[i] = strings.TrimSpace(string(v))
+		}
+		return enabledAPIs
+	}
+
+	// if enabledAPIs not set, check if S3 should be disabled
+	if protocolSpec.S3 != nil && protocolSpec.S3.Enabled != nil && !*protocolSpec.S3.Enabled { //nolint // disable deprecation check
+		return rgwAPIwithoutS3
+	}
+	// see also https://docs.ceph.com/en/octopus/radosgw/config-ref/#swift-settings on disabling s3
+	// when using '/' as prefix
+	if protocolSpec.Swift != nil && protocolSpec.Swift.UrlPrefix != nil && *protocolSpec.Swift.UrlPrefix == "/" {
+		logger.Warning("Forcefully disabled S3 as the swift prefix is given as a slash /. Ignoring any S3 options (including Enabled=true)!")
+		return rgwAPIwithoutS3
+	}
+	return nil
+}
+
 func renderProbe(cfg rgwProbeConfig) (string, error) {
 	var writer bytes.Buffer
 	name := string(cfg.ProbeType) + "-probe"
@@ -924,16 +1113,26 @@ func renderProbe(cfg rgwProbeConfig) (string, error) {
 }
 
 func (c *clusterConfig) addDNSNamesToRGWServer() (string, error) {
-	if (c.store.Spec.Hosting == nil) || len(c.store.Spec.Hosting.DNSNames) <= 0 {
+	if c.store.Spec.Hosting == nil {
+		return "", nil
+	}
+	if !c.store.AdvertiseEndpointIsSet() && len(c.store.Spec.Hosting.DNSNames) == 0 {
 		return "", nil
 	}
 	if !c.clusterInfo.CephVersion.IsAtLeastReef() {
 		return "", errors.New("rgw dns names are supported from ceph v18 onwards")
 	}
 
-	// add default RGW service name to dns names
-	dnsNames := c.store.Spec.Hosting.DNSNames
-	dnsNames = append(dnsNames, domainNameOfService(c.store))
+	dnsNames := []string{}
+
+	if c.store.AdvertiseEndpointIsSet() {
+		dnsNames = append(dnsNames, c.store.Spec.Hosting.AdvertiseEndpoint.DnsName)
+	}
+
+	dnsNames = append(dnsNames, c.store.Spec.Hosting.DNSNames...)
+
+	// add default RGW service domain name to ensure RGW doesn't reject it
+	dnsNames = append(dnsNames, c.store.GetServiceDomainName())
 
 	// add custom endpoints from zone spec if exists
 	if c.store.Spec.Zone.Name != "" {

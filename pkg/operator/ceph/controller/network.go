@@ -117,7 +117,7 @@ func setNetworkCIDRs(clusterdCtx *clusterd.Context, clusterInfo *cephclient.Clus
 
 	logger.Infof("ensuring cluster %q %q network is configured to use CIDR(s) %q", ns, cephNet, settingVal)
 	if len(cidrs) > 0 {
-		var s monStoreInterface = getMonStoreFunc(clusterdCtx, clusterInfo)
+		s := getMonStoreFunc(clusterdCtx, clusterInfo)
 		changed, err := s.SetIfChanged("global", settingKey, settingVal)
 		if err != nil {
 			return errors.Wrapf(err, "failed to set CIDR(s) %q on cluster %q %q network", settingVal, cephNet, ns)
@@ -252,6 +252,7 @@ func discoverAddressRanges(
 		rookImage,
 		rookImage,
 		clusterSpec.CephVersion.ImagePullPolicy,
+		clusterSpec.Resources,
 	)
 	if err != nil {
 		return ranges, errors.Wrapf(err, "failed to set up ceph %q network canary", cephNetwork)
@@ -264,6 +265,8 @@ func discoverAddressRanges(
 	job.Spec.Template.Annotations = map[string]string{
 		nadv1.NetworkAttachmentAnnot: netSelectionValue,
 	}
+	cephv1.GetCmdReporterAnnotations(clusterSpec.Annotations).ApplyToObjectMeta(&job.Spec.Template.ObjectMeta)
+	cephv1.GetCmdReporterLabels(clusterSpec.Labels).ApplyToObjectMeta(&job.Spec.Template.ObjectMeta)
 
 	// use osd placement for net canaries b/c osd pods are present on both public and cluster nets
 	cephv1.GetOSDPlacement(clusterSpec.Placement).ApplyToPodSpec(&job.Spec.Template.Spec)
@@ -341,7 +344,11 @@ func networkStatusVolumeAndMount() (corev1.Volume, corev1.VolumeMount) {
 					Path: "network-status",
 					FieldRef: &corev1.ObjectFieldSelector{
 						FieldPath: `metadata.annotations['` + nadv1.NetworkStatusAnnot + `']`,
-					}}}}}}
+					},
+				}},
+			},
+		},
+	}
 	mnt := corev1.VolumeMount{
 		Name:      "network-status",
 		MountPath: "/var/lib/rook/multus",

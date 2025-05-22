@@ -37,6 +37,11 @@ func GetMgrAnnotations(a AnnotationsSpec) Annotations {
 	return mergeAllAnnotationsWithKey(a, KeyMgr)
 }
 
+// GetDashboardAnnotations returns the Annotations for the Dashboard service
+func GetDashboardAnnotations(a AnnotationsSpec) Annotations {
+	return mergeAllAnnotationsWithKey(a, KeyDashboard)
+}
+
 // GetMonAnnotations returns the Annotations for the MON service
 func GetMonAnnotations(a AnnotationsSpec) Annotations {
 	return mergeAllAnnotationsWithKey(a, KeyMon)
@@ -67,6 +72,16 @@ func GetCephExporterAnnotations(a AnnotationsSpec) Annotations {
 	return mergeAllAnnotationsWithKey(a, KeyCephExporter)
 }
 
+// GetCmdReporterAnnotations returns the Annotations for jobs detecting versions
+func GetCmdReporterAnnotations(a AnnotationsSpec) Annotations {
+	return mergeAllAnnotationsWithKey(a, KeyCmdReporter)
+}
+
+// GetCrashCollectorAnnotations returns the Annotations for the crash collector
+func GetCrashCollectorAnnotations(a AnnotationsSpec) Annotations {
+	return mergeAllAnnotationsWithKey(a, KeyCrashCollector)
+}
+
 func GetClusterMetadataAnnotations(a AnnotationsSpec) Annotations {
 	return a[KeyClusterMetadata]
 }
@@ -95,14 +110,20 @@ func (a Annotations) ApplyToObjectMeta(t *metav1.ObjectMeta) {
 // original Annotations with the attributes of the supplied one. The supplied
 // Annotation attributes will override the original ones if defined.
 func (a Annotations) Merge(with map[string]string) Annotations {
-	ret := a
-	if ret == nil {
-		ret = map[string]string{}
+	// Create a new map of type Annotations to hold the merged results
+	ret := Annotations{}
+
+	// Copy the contents of the original map (a) into ret
+	for k, v := range a {
+		ret[k] = v
 	}
+
+	// Add entries from the 'with' map only if the key does not already exist
 	for k, v := range with {
-		if _, ok := ret[k]; !ok {
+		if _, exists := ret[k]; !exists {
 			ret[k] = v
 		}
 	}
+
 	return ret
 }

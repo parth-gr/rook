@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
@@ -40,7 +39,6 @@ var (
 )
 
 func TestObjectChanged(t *testing.T) {
-
 	oldObject := &cephv1.CephBlockPool{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -85,33 +83,6 @@ func TestObjectChanged(t *testing.T) {
 	changed, err = objectChanged(oldObject, newObject, "foo")
 	assert.NoError(t, err)
 	assert.True(t, changed)
-}
-
-func TestIsUpgrade(t *testing.T) {
-	oldLabel := make(map[string]string)
-	newLabel := map[string]string{
-		"foo": "bar",
-	}
-
-	// no value do nothing
-	b := isUpgrade(oldLabel, newLabel)
-	assert.False(t, b)
-
-	// different value do something
-	newLabel["ceph_version"] = "17.2.0-quincy"
-	b = isUpgrade(oldLabel, newLabel)
-	assert.True(t, b, fmt.Sprintf("%v,%v", oldLabel, newLabel))
-
-	// same value do nothing
-	oldLabel["ceph_version"] = "17.2.0-quincy"
-	newLabel["ceph_version"] = "17.2.0-quincy"
-	b = isUpgrade(oldLabel, newLabel)
-	assert.False(t, b, fmt.Sprintf("%v,%v", oldLabel, newLabel))
-
-	// different value do something
-	newLabel["ceph_version"] = "17.2.1-quincy"
-	b = isUpgrade(oldLabel, newLabel)
-	assert.True(t, b, fmt.Sprintf("%v,%v", oldLabel, newLabel))
 }
 
 func TestIsValidEvent(t *testing.T) {
@@ -214,9 +185,6 @@ func TestIsCMToIgnoreOnDelete(t *testing.T) {
 }
 
 func TestIsSecretToIgnoreOnUpdate(t *testing.T) {
-	blockPool := &cephv1.CephBlockPool{}
-	assert.False(t, isSecretToIgnoreOnUpdate(blockPool))
-
 	s := &corev1.Secret{}
 	assert.False(t, isSecretToIgnoreOnUpdate(s))
 

@@ -255,8 +255,8 @@ When a user requests to create the application pod with PVC, there is a three-st
 ### csi-driver registration
 
 `csi-cephfsplugin-xxxx` or `csi-rbdplugin-xxxx` is a daemonset pod running on all the nodes
- where your application gets scheduled. If the plugin pods are not running on the node where
- your application is scheduled might cause the issue, make sure plugin pods are always running.
+where your application gets scheduled. If the plugin pods are not running on the node where
+your application is scheduled might cause the issue, make sure plugin pods are always running.
 
 Each plugin pod has two important containers: one is `driver-registrar` and `csi-rbdplugin` or
 `csi-cephfsplugin`. Sometimes there is also a `liveness-prometheus` container.
@@ -412,9 +412,6 @@ Where `-m` is one of the mon endpoints and the `--key` is the key used by the CS
 ## Node Loss
 
 When a node is lost, you will see application pods on the node stuck in the `Terminating` state while another pod is rescheduled and is in the `ContainerCreating` state.
-
-!!! important
-    For clusters with Kubernetes version 1.26 or greater, see the [improved automation](../Storage-Configuration/Block-Storage-RBD/block-storage.md#recover-rbd-rwo-volume-in-case-of-node-loss) to recover from the node loss. If using K8s 1.25 or older, continue with these instructions.
 
 ### Force deleting the pod
 

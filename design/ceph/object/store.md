@@ -221,6 +221,275 @@ spec:
     name: zone1
 ```
 
+### Pool Placement targets and Storage Classes
+
+Object Storage API allows users to specify where bucket data will be stored during bucket creation. With `<LocationConstraint>` parameter in S3 API and `X-Storage-Policy` header in SWIFT. Similarly, users can override where object data will be stored by setting `X-Amz-Storage-Class` and `X-Object-Storage-Class` during object creation.
+
+In Ceph these data locations represented by Pools. Placement targets control which Pools are associated with a particular bucket. A bucket’s placement target is selected on creation, and cannot be modified (See [Ceph doc](https://docs.ceph.com/en/latest/radosgw/placement/#pool-placement-and-storage-classes)). Placement target can also define custom Storage classes to override data pool where object will be stored.
+
+Ceph administrator creates set of `index_pool`, `data_pool`, and optional `data_extra_pool` per each target placement. Selects arbitrary names for target placements. For example `fast` and `cold`:
+> [!NOTE]
+> `data_extra_pool` is for data that cannot use erasure coding. For example, multi-part uploads allow uploading a large object such as a movie in multiple parts. These parts must first be stored without erasure coding. So if `data_pool` is **not** erasure coded, then there is not need for `data_extra_pool`.
+
+```yaml
+# Default Data pool
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: rgw-meta-pool
+  namespace: rook-ceph
+spec:
+  ...
+---
+# Default index pool
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: rgw-data-pool
+  namespace: rook-ceph
+spec:
+  ...
+# Bucket Data pool for fast storage
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: rgw-fast-data-pool
+  namespace: rook-ceph
+spec:
+  ...
+---
+# Bucket index pool for fast storage
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: rgw-fast-meta-pool
+  namespace: rook-ceph
+spec:
+  ...
+---
+# Bucket Data pool for cold storage
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: rgw-cold-data-pool
+  namespace: rook-ceph
+spec:
+  ...
+---
+# Bucket index pool for cold storage
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: rgw-cold-meta-pool
+  namespace: rook-ceph
+spec:
+  ...
+```
+
+If needed, create additional pool to use it in custom StorageClass, for example `GLACIER`:
+> [!NOTE]
+> Ceph allows arbitrary name for StorageClasses, however some clients/libs insist on AWS names so it is recommended to use one of the [valid x-amz-storage-class values](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html#API_PutObject_RequestSyntax) for better compatibility:
+>
+> `STANDARD | REDUCED_REDUNDANCY | STANDARD_IA | ONEZONE_IA | INTELLIGENT_TIERING | GLACIER | DEEP_ARCHIVE | OUTPOSTS | GLACIER_IR | SNOW | EXPRESS_ONEZONE`
+
+```yaml
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: glacier-data-pool
+  namespace: rook-ceph
+spec:
+  ...
+```
+
+Then update `CephObjectStore` CRD  `sharedPools` section with target placements and StorageClasses definitions:
+
+```yaml
+spec:
+  # [OPTIONAL] - sharedPools is mutually exclusive with spec.metadataPool and spec.dataPool
+  # It is the place to tell RGW which pools can be used to store buckets and objects data and metadata.
+  # All pools under this section should be created beforehand.
+  # Rook will append rados namespace to each of the pools, so it is safe to use the same pool across multiple RGW instances.
+  # It is also safe to use the same pool in different target placements.
+  sharedPools:
+    #  [EXISTING,OPTIONAL] - metadata pool. Will be used by default to store bucket index
+    # default poolPlacement.metadataPoolName will override this value, so it is not makes sense to use together with poolPlacements.
+    metadataPoolName: rgw-meta-pool # results to rgw-meta-pool:<CephObjectStore.name>.index
+
+    #  [EXISTING,OPTIONAL] - data pool. Will be used by default to store bucket objects
+    # default poolPlacement.dataPoolName will override this value, so it is not makes sense to use together with poolPlacements.
+    dataPoolName: rgw-data-pool # results to rgw-data-pool:<CephObjectStore.name>.data
+
+    # New settings:
+    # [OPTIONAL] - defines pool placement targets.
+    # Placement targets control which Pools are associated with a particular bucket.
+    # See: https://docs.ceph.com/en/latest/radosgw/placement/#placement-targets
+    poolPlacements:
+      # Default pool placement:
+      - name: "default"                         # [REQUIRED] - placement id. Placement with name "default" will be used as default,
+                                                # and therefore will override sharedPools.metadataPoolName and sharedPools.dataPoolName if presented.
+                                                # This means that default poolPlacement is also mutually exclusive with spec.metadataPool and spec.dataPool
+        metadataPoolName: rgw-meta-pool         # [REQUIRED] results to rgw-meta-pool:<CephObjectStore.name>.index
+        dataPoolName: rgw-data-pool             # [REQUIRED] results to rgw-data-pool:<CephObjectStore.name>.data
+        dataNonECPoolName: ""                   # [OPTIONAL] results to rgw-data-pool:<CephObjectStore.name>.data.nonec
+        # [OPTIONAL] - Storage classes for default placement target.
+        # Any placement has default storage class named STANDARD pointing to dataPoolName.
+        # So stageClasses allows to define additional storage classes on top of STANDARD for given placement.
+        storageClasses:
+      # Pool placement target named "fast"
+      - name: "fast"
+        metadataPoolName: rgw-fast-meta-pool     # [REQUIRED] results to rgw-fast-meta-pool:<CephObjectStore.name>.fast.index
+        dataPoolName: rgw-fast-data-pool         # [REQUIRED] results to rgw-fast-data-pool:<CephObjectStore.name>.fast.data
+        dataNonECPoolName: ""                   # [OPTIONAL] results to rgw-fast-data-pool:<CephObjectStore.name>.fast.data.nonec
+        # [OPTIONAL] - Additional Storage classes for fast placement target. Provide alternatives to default STANDARD storage clsss.
+        # STANDARD storage class cannot be changed or removed and always points to placement dataPoolName to store object data.
+        storageClasses:
+      # Pool placement target named "cold"
+      - name: "cold"                            # [REQUIRED] - placement id. Can be arbitrary.
+        metadataPoolName: rgw-cold-meta-pool    # [REQUIRED] results to rgw-cold-meta-pool:<CephObjectStore.name>.cold.index
+        dataPoolName: rgw-cold-data-pool        # [REQUIRED] results to rgw-cold-data-pool:<CephObjectStore.name>.cold.data
+        dataNonECPoolName: ""                   # [OPTIONAL] results to rgw-cold-data-pool:<CephObjectStore.name>.cold.data.nonec
+        # [OPTIONAL] - Additional Storage classes for cold placement target. Provides alternatives to default STANDARD storage clsss.
+        # STANDARD storage class cannot be changed or removed and always points to placement dataPoolName to store object data.
+        storageClasses:
+          - name: GLACIER                       # [REQUIRED] StorageClass name. Can be arbitrary but it is better to use one of AWS x-amz-storage-class names.
+            dataPoolName: glacier-data-pool     # [REQUIRED] results to glacier-data-pool:<CephObjectStore.name>.glacier
+```
+
+Here we specified that pools `rgw-meta-pool` and `rgw-data-pool` will be used by default. We also added extra placements named `fast` and `cold` with corresponding data and metadata pools. We also introduced extra storage class `GLACIER` for `cold` placement, which can be used to override object data pool to `glacier-data-pool` within `cold` placement.
+
+Rook CephObjectStore controller reconciliation loop for target placements:
+
+1. CephObjectStore CRD changed
+2. Validate `spec.sharedPools`:
+3. Check that listed pools are created.
+4. Calculate zone and zonegroup name: `CephObjectStore.spec.zone.name | CephObjectStore.metadata.name` - equal to zone name for multisite, otherwise equal to rgw name.
+4. get default zonegroup: `radosgw-admin zonegroup get --rgw-zonegroup=<name>`
+    ```json
+    {
+        "placement_targets": [
+            {
+                "name": "default-placement",
+                "tags": [],
+                "storage_classes": [
+                    "STANDARD"
+                ]
+            }
+        ],
+        "default_placement": "default-placement",
+         ...
+    }
+    ```
+5. update json to:
+    ```json
+    {
+        "placement_targets": [
+            {
+                "name": "default-placement",
+                "tags": [],
+                "storage_classes": [
+                    "STANDARD"
+                ]
+            }
+            {
+                "name": "fast",
+                "tags": [],
+                "storage_classes": [
+                    "STANDARD"
+                ]
+            },
+            {
+                "name": "cold",
+                "tags": [],
+                "storage_classes": [
+                    "STANDARD","GLACIER"
+                ]
+            }
+        ],
+        "default_placement": "default-placement",
+         ...
+    }
+    ```
+6. update with `radosgw-admin zonegroup set --rgw-zonegroup=<name> --infile zonegroup.json`
+7. get default zone: `radosgw-admin zone get --rgw-zone=<name>`
+    ```json
+    {
+        "placement_pools": [
+            {
+                "key": "default-placement",
+                "val": {
+                    "index_pool": "<CephObjectStore name>.rgw.buckets.index",
+                    "storage_classes": {
+                        "STANDARD": {
+                            "data_pool": "<CephObjectStore name>.rgw.buckets.data"
+                        }
+                    },
+                    "data_extra_pool": "<CephObjectStore name>.rgw.buckets.non-ec",
+                    "index_type": 0,
+                    "inline_data": true
+                }
+            }
+        ],
+        ...
+    }
+    ```
+8. update json to
+    ```json
+    {
+        "placement_pools": [
+            {
+                "key": "default-placement",
+                "val": {
+                    "index_pool": "rgw-meta-pool:<CephObjectStore.name>.index",
+                    "storage_classes": {
+                        "STANDARD": {
+                            "data_pool": "rgw-data-pool:<CephObjectStore.name>.data"
+                        }
+                    },
+                    "data_extra_pool": "rgw-data-pool:<CephObjectStore.name>.data.nonec",
+                    "index_type": 0,
+                    "inline_data": true
+                }
+            },
+            {
+                "key": "fast",
+                "val": {
+                    "index_pool": "rgw-cold-meta-pool:<CephObjectStore.name>.fast.index",
+                    "storage_classes": {
+                        "STANDARD": {
+                            "data_pool": "rgw-fast-data-pool:<CephObjectStore.name>.fast.data"
+                        },
+                    },
+                    "data_extra_pool": "rgw-fast-data-pool:<CephObjectStore.name>.fast.data.nonec",
+                    "index_type": 0,
+                    "inline_data": true
+                }
+            },
+            {
+                "key": "cold",
+                "val": {
+                    "index_pool": "rgw-cold-meta-pool:<CephObjectStore.name>.cold.index",
+                    "storage_classes": {
+                        "STANDARD": {
+                            "data_pool": "rgw-cold-data-pool:<CephObjectStore.name>.cold.data"
+                        },
+                        "GLACIER": {
+                            "data_pool": "glacier-data-pool:<CephObjectStore.name>.glacier"
+                        }
+
+                    },
+                    "data_extra_pool": "rgw-cold-data-pool:<CephObjectStore.name>.cold.data.nonec",
+                    "index_type": 0,
+                    "inline_data": true
+                }
+            },
+        ],
+        ...
+    }
+    ```
+9. update with `radosgw-admin zone set --rgw-zone=<name> --infile zone.json`
+10. commit: `radosgw-admin period update --commit`
+
 ### Gateway
 
 The gateway settings correspond to the RGW service.
@@ -323,31 +592,203 @@ spec:
     caBundleRef: #ldaps-cabundle
 ```
 
-### Virtual Host Style access for buckets
+### Virtual host-style access for buckets
 
-The Ceph Object Gateway supports accessing buckets using [virtual host style](https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html) which allows accessing buckets using the bucket name as a subdomain in the endpoint. The user can configure this option manually like below:
+The Ceph Object Gateway supports accessing buckets using
+[virtual host-style](https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html)
+addressing, which allows accessing buckets using the bucket name as a subdomain in the endpoint.
+This is important because AWS (the primary definer of the S3 interface) has deprecated the
+alternative, path-style access which is Ceph (and Rook's) default deployment. AWS has extended
+support for path-style access, but Rook/OBC/COSI users have begun to identify applications which do
+not support the long-deprecated path-style access.
+
+Virtual host-style (vhost-style) addressing requires 2 things:
+1. An endpoint that supports [wildcard addressing](https://en.wikipedia.org/wiki/Wildcard_DNS_record)
+2. The above DNS endpoint must be added to RGW's `rgw_dns_names` list
+
+The user can configure this option manually in Rook like below for a wildcard-enabled endpoint:
 
 ```sh
 # ceph config set client.rgw.mystore.a rgw_dns_name my-ingress.mydomain.com,rook-ceph-rgw-my-store.rook-ceph.svc
 ```
 
-Multiple hostnames can be added to the list separated by comma. Each entry must be a valid RFC-1123 hostname, and Rook Operator will perform input validation using k8s apimachinery `IsDNS1123Subdomain()`.
+In this example, if the object store contains a bucket named `sample`, then the S3 vhost-style
+access URL would be `sample.my-ingress.mydomain.com`. More details about the feature can be
+found in [Ceph Documentation](https://docs.ceph.com/en/latest/radosgw/s3/commons/#bucket-and-host-name).
+This is supported from Ceph Reef release(v18.0) onwards.
 
-When `rgw_dns_name` is changed for an RGW cluster, all RGWs need to be restarted. To enforce this in Rook, we can apply the `--rgw-dns-name` flag, which will restart RGWs with no user action needed. This is supported from Ceph Reef release(v18.0) onwards.
+Wildcard DNS addressing can be configured in myriad ways. Some options:
+- Kubernetes [ingress loadbalancer](https://kubernetes.io/docs/concepts/services-networking/ingress/#hostname-wildcards)
+- Openshift [DNS operator](https://docs.openshift.com/container-platform/latest/networking/dns-operator.html)
 
-This is different from `customEndpoints` which is used for configuring the object store to replicate and sync data amongst Multisite.
+Rook will implement the following API to allow for user configuration, with detailed design notes to follow.
 
-The default service endpoint for the object store `rook-ceph-rgw-my-store.rook-ceph.svc` and `customEndpoints` in `CephObjectZone` need to be added automatically by the Rook operator otherwise existing object store may impacted. Also check for deduplication in the `rgw_dns_name` list if user manually add the default service endpoint.
+- `hosting` (optional) - configures hosting settings for the CephObjectStore
+    - `advertiseEndpoint` (optional) - allow users to definitively specify which endpoint the user
+      wants applications to use by default for internal S3 connections.
+    - `dnsNames` (optional) - RGW will reject any S3 connections to unknown endpoints. Users should
+      add any additional endpoints RGW should accept here.
 
-For accessing the bucket point user need to configure wildcard dns in the cluster using [ingress loadbalancer](https://kubernetes.io/docs/concepts/services-networking/ingress/#hostname-wildcards) or in openshift cluster use [dns operator](https://docs.openshift.com/container-platform/latest/networking/dns-operator.html). Same for TLS certificate, user need to configure the TLS certificate for the wildcard dns for the RGW endpoint. This option won't be enabled by default, user need to enable it by adding the `hosting` section in the `Gateway` settings:
+The below example illustrates a commonly-anticipated configuration, and one that Rook can recommend
+to users. The user is using an internal, wildcard-enabled K8s service as the advertised endpoint for
+OBCs. The user also has externally-available ingress that the RGW needs to accept connections from,
+which serves S3 applications outside the Kubernetes cluster. Both endpoints are wildcard-enabled,
+but the internal service is preferable to the external ingress to prevent the ingress router from
+being a cluster-wide S3 bottleneck for Kubernetes applications.
 
 ```yaml
 spec:
   hosting:
+    advertiseEndpoint:
+      dnsName: my-internal-wildcard-service.mydomain.com
+      port: 8443
+      useTLS: true
     dnsNames:
-    - "my-ingress.mydomain.com"
+      - my-external-ingress.mydomain.com
 ```
 
-A list of hostnames to use for accessing the bucket directly like a subdomain in the endpoint. For example if the ingress service endpoint `my-ingress.mydomain.com` added and the object store contains a bucket named `sample`, then the s3 [virtual host style](https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html) would be `http://sample.my-ingress.mydomain.com`. More details about the feature can be found in [Ceph Documentation](https://docs.ceph.com/en/latest/radosgw/s3/commons/#bucket-and-host-name).
+These proposed configurations are necessary for users to enable vhost-style addressing, but they are
+not **only** useful when DNS wildcarding is enabled. These configurations are independent and may
+provide some value to other user scenarios. Be clear in documentation that wildcarding is enabled by
+these features but not required.
 
-When this feature is enabled the endpoint in OBCs and COSI Bucket Access can be clubbed with bucket name and host name. For OBC  the `BUCKET_NAME` and the `BUCKET_HOST` from the config map combine to `http://$BUCKETNAME.$BUCKETHOST`. For COSI Bucket Access the `bucketName` and the `endpoint` in the `BucketInfo` to `http://bucketName.endpoint`.
+When the user configures DNS wildcarding on an endpoint other than the CephObjectStore service
+endpoint, Rook should advertise that endpoint to CephObjectStores, OBCs, and COSI Buckets/Accesses
+as a priority. However, Rook cannot know which endpoints support wildcarding in order to prioritize
+advertising them. Therefore, allow users to disambiguate for Rook which endpoint should be
+advertised via `advertiseEndpoint`.
+
+S3 clients (and therefore OBCs and COSI) generally assume a single endpoint for an object store.
+Multiple advertised endpoints will not be supported to avoid user and internal/developer confusion.
+
+By default, Rook will advertise the CephObjectStore service endpoint with a priority on advertising
+the HTTPS (`securePort`) endpoint. Because the advertised endpoint is primarily relevant for
+resources internal to the Kubernetes cluster, this default should be sufficient for most users, and
+this is the behavior expected by users when `dnsNames` is not configured, so it should be familiar.
+
+When this feature is enabled, there should be no ambiguity about which endpoint Rook will use for
+Admin Ops API communication. As an HTTP server, RGW is only able to return a single TLS certificate
+to S3 clients ([more detail](https://github.com/rook/rook/issues/14530)). For maximum compatibility
+while TLS is enabled, Rook should connect to the same endpoint that users do. Internally, Rook will
+use the advertise endpoint as configured.
+
+Rook documentation will inform users that if TLS is enabled, they must give Rook a certificate that
+accepts the service endpoint. Alternately, if that is not possible, Rook will add an
+`insecureSkipTlsVerification` option to the CephObjectStore to allow users to provision a healthy
+CephObjectStore. This opens users up to machine-in-the-middle attacks, so users should be advised to
+only use it for test/proof-of-concept clusters, or to work around bugs temporarily.
+
+Some users have reported issues with Rook using a `dnsNames` endpoint
+(or `advertiseEndpoint`) when they wish to set up ingress certificates after Rook deployment. The
+obvious alternative is to have Rook always use the CephObjectStore service, but other users have
+expressed troubles creating certificates or CAs that allow the service endpoint in the past.
+
+Each `rgw_dns_name` entry must be a valid RFC-1123 hostname, and Rook Operator will perform input validation using k8s apimachinery `IsDNS1123Subdomain()`.
+
+When `rgw_dns_name` is changed for an RGW cluster, all RGWs need to be restarted. To enforce this in Rook, we can apply the `--rgw-dns-name` flag, which will restart RGWs with no user action needed.
+
+This is different from CephObjectZone `customEndpoints` which is used for configuring the object store to replicate and sync data amongst Multisite.
+
+When endpoints are configured in `rgw_dns_names`, the RGW will reject any incoming connections
+intended for endpoints not in the list. Therefore, all endpoints that might be used must be added.
+
+For convenience, and to ensure other CephObjectStore configurations are not rendered unusable when
+users add additional endpoints to `dnsNames`, the following should be added to the `rgw_dns_names`
+list automatically by Rook:
+- the `advertiseEndpoint.dnsName`
+- the default service endpoint for the object store (e.g., `rook-ceph-rgw-my-store.rook-ceph.svc`)
+- CephObjectZone `customEndpoints`
+
+When Rook builds the `rgw_dns_names` list internally, Rook should remove any duplicate entries.
+While Rook add endpoints to the list for safety and convenience, users might add the same endpoints,
+which Rook should not treat as a configuration bug. Rook should also ensure the list ordering is
+consistent between reconciles.
+
+Rook can refer users to this Kubernetes doc for a suggested way that they can manage certificates
+in a Kubernetes cluster that work with Kubernetes services like the CephObjectStore service:
+https://kubernetes.io/docs/tasks/tls/managing-tls-in-a-cluster/
+
+For external CephCephObjectStores (i.e., when `spec.gateway.externalRgwEndpoints` are set),
+vhost-style addressing should be configured on the host cluster, and `hosting.dnsNames` is
+irrelevant. The default `advertiseEndpoint` for external CephObjectStores is the first entry in the
+`spec.gateway.externalRgwEndpoints` list, which users should be able to override if desired.
+
+### Advanced user configuration
+
+RGW is a very active project with many existing features and regular new feature additions. Rook
+maintainers have a hard time catching up with RGW's latest features. In an effort to help users who
+want access to rare and new features, Rook can allow users to set arbitrary Ceph configs in their
+CephObjectStore CR. RGW config reference: https://docs.ceph.com/en/reef/radosgw/config-ref/
+
+This is an advanced feature. It allows users to modify many untested aspects of the RGW and object
+store. Any user configs that break the object store should be documented to be a responsibility of
+the user.
+
+```yaml
+spec:
+  metadataPool: # ...
+  dataPool: # ...
+  gateway:
+    rgwConfig:
+      conf-name: value
+      other_conf: value
+      debug_rgw: "20"
+    rgwCommandFlags:
+      flag-name: value
+      other_flag: value
+      rgw_enable_apis: "s3, s3website, swift, swift_auth, sts, iam, notifications"
+```
+
+CephCluster has a configuration section called `config` that sets mon config store values. `config`
+may be too vague in the context of the CephObjectStore CR. `rgwConfig` is a clearer naming for users
+and gives context that Ceph RGW configs are expected. A search engine search for "rgw config" also
+yields the correct Ceph documentation for users, which suggest the naming is apt.
+
+CephObjectStore will also add an `rgwCommandFlags` variable to allow users to set CLI flags to the
+`radosgw` deployment. Changes to these parameters will result in RGW daemon restarts, which can be
+desired behavior for config values like `rgw_enable_apis`. In testing, the `radosgw` command process
+supports adding multiple flags, and the last flag sequentially is used as the input source.
+
+Rook users can already use the `CephCluster.spec.config` section to control individual
+CephObjectStore configurations today. However, this requires users to know the name of the Ceph
+client user for each CephObjectStore, and it only allows setting object store fields after the
+object store is provisioned. Adding this feature improves config override usability for object store
+users, and it keeps config overrides in the same place as the resource. This is a clear quality of
+life improvement for users managing object stores.
+
+Rook will apply `rgwConfig` values to the mon config store after its own values are set. Similarly,
+Rook will append `rgwCommandFlags` to the CLI flags it sets normally. This allows users to override
+anything Rook is doing to configure the RGW. This tradeoff favors user flexibility at the risk of
+less advanced users having more ability to break their RGW deployments. Rook can't make guarantees
+about data security when configs are overridden.
+
+For debugging, Rook should log when it overrides its own ceph mon store config with a user setting.
+This is not easily feasible when Rook applies CLI flags to the RGW deployment, but users can see
+when when their values conflict by inspecting the RGW deployment; this is sufficient for debugging.
+
+Rook will apply each configuration under the client scope of the shared RGW client.
+i.e., `client.rook-ceph-rgw-<store-name>.a`. This will also help ensure that configs changed don't
+affect other Rook-managed Ceph daemons, critically mons, osds, and mds.
+
+Configs set via `rgwConfig` will be equivalent to a Ceph config section like the following ini. 
+Config keys can use spaces, hyphens, or underscores. CLI flags must use hyphens, and Rook can
+auto-convert spaces/underscores for ease of use.
+
+```ini
+[client.rook-ceph-rgw-<store-name>.a]
+conf_name = value
+other_conf = value
+debug_rgw = "20"
+```
+
+Because the subject of the configs are limited to RGWs using the
+`client.rook-ceph-rgw-<store-name>.a` ID, risk of affecting other Ceph components is low. Rook has
+the option to allow-/deny-list the configs users are able to set, but this limits user flexibility.
+Since it will be documented that any breakage or bugs related to options set via this mechanism is
+their responsibility, we can be further sure Rook maintainers won't be obligated to stress
+themselves for abuse or misuse of this feature.
+
+Rook will also not perform validation to check if CephObjectStore configs conflict with CephCluster
+`config` options. Users should refrain from setting `client.rook-ceph-rgw-*` configs in the
+CephCluster when this feature is used. Documentation should note this for users. Rook can revisit
+this decision in the future to add cross-CRD validation if it becomes a strong user desire/need.

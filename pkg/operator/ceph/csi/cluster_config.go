@@ -148,7 +148,7 @@ func updateNetNamespaceFilePath(clusterNamespace string, cc csiClusterConfig) {
 
 // updateCsiClusterConfig returns a json-formatted string containing
 // the cluster-to-mon mapping required to configure ceph csi.
-func updateCsiClusterConfig(curr, clusterKey string, newCsiClusterConfigEntry *CSIClusterConfigEntry) (string, error) {
+func updateCsiClusterConfig(curr, clusterID, clusterNamespace string, newCsiClusterConfigEntry *CSIClusterConfigEntry) (string, error) {
 	var (
 		cc     csiClusterConfig
 		centry CSIClusterConfigEntry
@@ -166,9 +166,17 @@ func updateCsiClusterConfig(curr, clusterKey string, newCsiClusterConfigEntry *C
 	// independently and won't collide.
 	if newCsiClusterConfigEntry != nil {
 		for i, centry := range cc {
+			// there is a bug with an unknown source where the csi config can have an empty
+			// namespace entry. detect and fix this scenario if it occurs
+			if centry.Namespace == "" && centry.ClusterID == clusterID {
+				logger.Infof("correcting CSI config map entry for cluster ID %q; empty namespace will be set to %q", clusterID, clusterNamespace)
+				centry.Namespace = clusterNamespace
+				cc[i] = centry
+			}
+
 			// If the clusterID belongs to the same cluster, update the entry.
 			// update default clusterID's entry
-			if clusterKey == centry.Namespace {
+			if clusterID == centry.Namespace {
 				centry.Monitors = newCsiClusterConfigEntry.Monitors
 				centry.ReadAffinity = newCsiClusterConfigEntry.ReadAffinity
 				centry.CephFS.KernelMountOptions = newCsiClusterConfigEntry.CephFS.KernelMountOptions
@@ -178,7 +186,7 @@ func updateCsiClusterConfig(curr, clusterKey string, newCsiClusterConfigEntry *C
 		}
 	}
 	for i, centry := range cc {
-		if centry.ClusterID == clusterKey {
+		if centry.ClusterID == clusterID {
 			// If the new entry is nil, this means the entry is being deleted so remove it from the list
 			if newCsiClusterConfigEntry == nil {
 				cc = append(cc[:i], cc[i+1:]...)
@@ -214,8 +222,8 @@ func updateCsiClusterConfig(curr, clusterKey string, newCsiClusterConfigEntry *C
 		// If it's the first time we create the cluster, the entry does not exist, so the removal
 		// will fail with a dangling pointer
 		if newCsiClusterConfigEntry != nil {
-			centry.ClusterID = clusterKey
-			centry.Namespace = newCsiClusterConfigEntry.Namespace
+			centry.ClusterID = clusterID
+			centry.Namespace = clusterNamespace
 			centry.Monitors = newCsiClusterConfigEntry.Monitors
 			centry.RBD = newCsiClusterConfigEntry.RBD
 			centry.CephFS = newCsiClusterConfigEntry.CephFS
@@ -227,7 +235,7 @@ func updateCsiClusterConfig(curr, clusterKey string, newCsiClusterConfigEntry *C
 		}
 	}
 
-	updateNetNamespaceFilePath(clusterKey, cc)
+	updateNetNamespaceFilePath(clusterID, cc)
 	return formatCsiClusterConfig(cc)
 }
 
@@ -254,20 +262,58 @@ func CreateCsiConfigMap(ctx context.Context, namespace string, clientset kuberne
 		if !k8serrors.IsAlreadyExists(err) {
 			return errors.Wrapf(err, "failed to create initial csi config map %q (in %q)", configMap.Name, namespace)
 		}
+		// CM already exists; update owner refs to it if needed
+		// this corrects issues where the csi config map was sometimes created with CephCluster
+		// owner ref, which would result in the cm being deleted if that cluster was deleted
+		if err := updateCsiConfigMapOwnerRefs(ctx, namespace, clientset, ownerInfo); err != nil {
+			return errors.Wrapf(err, "failed to ensure csi config map %q (in %q) owner references", configMap.Name, namespace)
+		}
+	} else {
+		logger.Infof("successfully created csi config map %q", configMap.Name)
 	}
 
-	logger.Infof("successfully created csi config map %q", configMap.Name)
+	return nil
+}
+
+// check the owner references on the csi config map, and fix incorrect references if needed
+func updateCsiConfigMapOwnerRefs(ctx context.Context, namespace string, clientset kubernetes.Interface, expectedOwnerInfo *k8sutil.OwnerInfo) error {
+	cm, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, ConfigName, metav1.GetOptions{})
+	if err != nil {
+		return errors.Wrapf(err, "failed to fetch csi config map %q (in %q) which already exists", ConfigName, namespace)
+	}
+
+	existingOwners := cm.GetOwnerReferences()
+	var currentOwner *metav1.OwnerReference = nil
+	if len(existingOwners) == 1 {
+		currentOwner = &existingOwners[0] // currentOwner is nil unless there is exactly one owner on the cm
+	}
+	// if there is exactly one owner, and it is correct --> no fix needed
+	if currentOwner != nil && (currentOwner.UID == expectedOwnerInfo.GetUID()) {
+		logger.Debugf("csi config map %q (in %q) has the expected owner; owner id: %q", ConfigName, namespace, currentOwner.UID)
+		return nil
+	}
+
+	// must fix owner refs
+	logger.Infof("updating csi configmap %q (in %q) owner info", ConfigName, namespace)
+	cm.OwnerReferences = []metav1.OwnerReference{}
+	if err := expectedOwnerInfo.SetControllerReference(cm); err != nil {
+		return errors.Wrapf(err, "failed to set updated owner reference on csi config map %q (in %q)", ConfigName, namespace)
+	}
+	_, err = clientset.CoreV1().ConfigMaps(namespace).Update(ctx, cm, metav1.UpdateOptions{})
+	if err != nil {
+		return errors.Wrapf(err, "failed to update csi config map %q (in %q) to update its owner reference", ConfigName, namespace)
+	}
+
 	return nil
 }
 
 // SaveClusterConfig updates the config map used to provide ceph-csi with
-// basic cluster configuration. The clusterNamespace and clusterInfo are
-// used to determine what "cluster" in the config map will be updated and
-// the clusterNamespace value is expected to match the clusterID
-// value that is provided to ceph-csi uses in the storage class.
-// The locker l is typically a mutex and is used to prevent the config
-// map from being updated for multiple clusters simultaneously.
-func SaveClusterConfig(clientset kubernetes.Interface, clusterNamespace string, clusterInfo *cephclient.ClusterInfo, newCsiClusterConfigEntry *CSIClusterConfigEntry) error {
+// basic cluster configuration. The clusterID, clusterNamespace, and clusterInfo are
+// used to determine what "cluster" in the config map will be updated. clusterID should be the same
+// as clusterNamespace for CephClusters, but for other resources (e.g., CephBlockPoolRadosNamespace,
+// CephFilesystemSubVolumeGroup) or for other supplementary entries, the clusterID should be unique
+// and different from the namespace so as not to disrupt CephCluster configurations.
+func SaveClusterConfig(clientset kubernetes.Interface, clusterID, clusterNamespace string, clusterInfo *cephclient.ClusterInfo, newCsiClusterConfigEntry *CSIClusterConfigEntry) error {
 	// csi is deployed into the same namespace as the operator
 	csiNamespace := os.Getenv(k8sutil.PodNamespaceEnvVar)
 	if csiNamespace == "" {
@@ -292,10 +338,7 @@ func SaveClusterConfig(clientset kubernetes.Interface, clusterNamespace string, 
 	configMap, err := clientset.CoreV1().ConfigMaps(csiNamespace).Get(clusterInfo.Context, ConfigName, metav1.GetOptions{})
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
-			err = CreateCsiConfigMap(clusterInfo.Context, csiNamespace, clientset, clusterInfo.OwnerInfo)
-			if err != nil {
-				return errors.Wrap(err, "failed creating csi config map")
-			}
+			return errors.Wrap(err, "waiting for CSI config map to be created")
 		}
 		return errors.Wrap(err, "failed to fetch current csi config map")
 	}
@@ -306,7 +349,7 @@ func SaveClusterConfig(clientset kubernetes.Interface, clusterNamespace string, 
 		currData = "[]"
 	}
 
-	newData, err := updateCsiClusterConfig(currData, clusterNamespace, newCsiClusterConfigEntry)
+	newData, err := updateCsiClusterConfig(currData, clusterID, clusterNamespace, newCsiClusterConfigEntry)
 	if err != nil {
 		return errors.Wrap(err, "failed to update csi config map data")
 	}

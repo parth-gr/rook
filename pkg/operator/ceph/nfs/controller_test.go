@@ -141,8 +141,9 @@ func TestCephNFSController(t *testing.T) {
 	baseCephNFS := func() *cephv1.CephNFS {
 		return &cephv1.CephNFS{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
+				Name:       name,
+				Namespace:  namespace,
+				Finalizers: []string{"cephnfs.ceph.rook.io"},
 			},
 			Spec: cephv1.NFSGaneshaSpec{
 				RADOS: cephv1.GaneshaRADOSSpec{
@@ -218,7 +219,7 @@ func TestCephNFSController(t *testing.T) {
 	}
 
 	currentAndDesiredCephVersion = func(ctx context.Context, rookImage string, namespace string, jobName string, ownerInfo *k8sutil.OwnerInfo, context *clusterd.Context, cephClusterSpec *cephv1.ClusterSpec, clusterInfo *cephclient.ClusterInfo) (*version.CephVersion, *version.CephVersion, error) {
-		return &version.Quincy, &version.Quincy, nil
+		return &version.Squid, &version.Squid, nil
 	}
 
 	t.Run("error - no ceph cluster", func(t *testing.T) {

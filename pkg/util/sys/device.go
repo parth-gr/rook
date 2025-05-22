@@ -19,6 +19,7 @@ package sys
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	osexec "os/exec"
 	"strconv"
 	"strings"
@@ -93,7 +94,7 @@ type LocalDisk struct {
 	Type string `json:"type"`
 	// Rotational is the boolean whether the device is rotational: true for hdd, false for ssd and nvme
 	Rotational bool `json:"rotational"`
-	// ReadOnly is the boolean whether the device is readonly
+	// Readonly is the boolean whether the device is readonly
 	Readonly bool `json:"readOnly"`
 	// Partitions is a partition slice
 	Partitions []Partition
@@ -133,13 +134,12 @@ func ListDevices(executor exec.Executor) ([]string, error) {
 
 // GetDevicePartitions gets partitions on a given device
 func GetDevicePartitions(device string, executor exec.Executor) (partitions []Partition, unusedSpace uint64, err error) {
-
 	var devicePath string
 	splitDevicePath := strings.Split(device, "/")
 	if len(splitDevicePath) == 1 {
-		devicePath = fmt.Sprintf("/dev/%s", device) //device path for OSD on devices.
+		devicePath = fmt.Sprintf("/dev/%s", device) // device path for OSD on devices.
 	} else {
-		devicePath = device //use the exact device path (like /mnt/<pvc-name>) in case of PVC block device
+		devicePath = device // use the exact device path (like /mnt/<pvc-name>) in case of PVC block device
 	}
 
 	output, err := executor.ExecuteCommandWithOutput("lsblk", devicePath,
@@ -279,7 +279,7 @@ func GetDiskUUID(device string, executor exec.Executor) (string, error) {
 	return parseUUID(device, output)
 }
 
-func GetDiskDeviceClass(disk *LocalDisk) string {
+func GetDiskDeviceType(disk *LocalDisk) string {
 	if disk.Rotational {
 		return "hdd"
 	}
@@ -287,6 +287,15 @@ func GetDiskDeviceClass(disk *LocalDisk) string {
 		return "nvme"
 	}
 	return "ssd"
+}
+
+func GetDiskDeviceClass(crushDeviceClassVarName, deviceType string) string {
+	crushDeviceClass := os.Getenv(crushDeviceClassVarName)
+	if crushDeviceClass != "" {
+		return crushDeviceClass
+	} else {
+		return deviceType
+	}
 }
 
 // CheckIfDeviceAvailable checks if a device is available for consumption. The caller
@@ -329,7 +338,6 @@ func GetLVName(executor exec.Executor, devicePath string) (string, error) {
 
 // finds the disk uuid in the output of sgdisk
 func parseUUID(device, output string) (string, error) {
-
 	// find the line with the uuid
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {

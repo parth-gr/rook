@@ -43,6 +43,7 @@ func (r *ReconcileCephRBDMirror) makeDeployment(daemonConfig *daemonConfig, rbdM
 			Volumes:            controller.DaemonVolumes(daemonConfig.DataPathMap, daemonConfig.ResourceName, r.cephClusterSpec.DataDirHostPath),
 			HostNetwork:        r.cephClusterSpec.Network.IsHost(),
 			PriorityClassName:  rbdMirror.Spec.PriorityClassName,
+			SecurityContext:    &v1.PodSecurityContext{},
 			ServiceAccountName: k8sutil.DefaultServiceAccount,
 		},
 	}
@@ -56,7 +57,7 @@ func (r *ReconcileCephRBDMirror) makeDeployment(daemonConfig *daemonConfig, rbdM
 		// ceph-client.rbd-mirror.a.log
 		// <CLUSTER_FSID>-client.rbd-mirror-peer.log
 		logRotationFilter := "*-client.rbd-mirror*"
-		podSpec.Spec.Containers = append(podSpec.Spec.Containers, *controller.LogCollectorContainer(logRotationFilter, r.clusterInfo.Namespace, *r.cephClusterSpec))
+		podSpec.Spec.Containers = append(podSpec.Spec.Containers, *controller.LogCollectorContainer(logRotationFilter, r.clusterInfo.Namespace, *r.cephClusterSpec, nil))
 	}
 
 	// Replace default unreachable node toleration
@@ -73,6 +74,7 @@ func (r *ReconcileCephRBDMirror) makeDeployment(daemonConfig *daemonConfig, rbdM
 	}
 	rbdMirror.Spec.Placement.ApplyToPodSpec(&podSpec.Spec)
 
+	// nolint:gosec // G115 no overflow expected for rbd mirror count
 	replicas := int32(rbdMirror.Spec.Count)
 	d := &apps.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -82,6 +84,7 @@ func (r *ReconcileCephRBDMirror) makeDeployment(daemonConfig *daemonConfig, rbdM
 			Labels:      controller.CephDaemonAppLabels(AppName, rbdMirror.Namespace, config.RbdMirrorType, daemonConfig.DaemonID, rbdMirror.Name, "cephrbdmirrors.ceph.rook.io", true),
 		},
 		Spec: apps.DeploymentSpec{
+			RevisionHistoryLimit: controller.RevisionHistoryLimit(),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: podSpec.Labels,
 			},

@@ -4,7 +4,7 @@ set -e
 ##############
 # VARIABLES #
 #############
-NAMESPACE=${NAMESPACE:="rook-ceph-external"}
+NAMESPACE=${NAMESPACE:="rook-ceph"}
 MON_SECRET_NAME=rook-ceph-mon
 RGW_ADMIN_OPS_USER_SECRET_NAME=rgw-admin-ops-user
 MON_SECRET_CLUSTER_NAME_KEYNAME=cluster-name
@@ -14,6 +14,7 @@ MON_SECRET_MON_KEYRING_KEYNAME=mon-secret
 MON_SECRET_CEPH_USERNAME_KEYNAME=ceph-username
 MON_SECRET_CEPH_SECRET_KEYNAME=ceph-secret
 MON_ENDPOINT_CONFIGMAP_NAME=rook-ceph-mon-endpoints
+EXTERNAL_COMMAND_CONFIGMAP_NAME=external-cluster-user-command
 ROOK_EXTERNAL_CLUSTER_NAME=$NAMESPACE
 ROOK_RBD_FEATURES=${ROOK_RBD_FEATURES:-"layering"}
 ROOK_EXTERNAL_MAX_MON_ID=2
@@ -126,11 +127,13 @@ function importClusterID() {
     createRadosNamespaceCR
     timeout 20 sh -c "until [ $($KUBECTL -n "$NAMESPACE" get CephBlockPoolRadosNamespace/"$RADOS_NAMESPACE" -o jsonpath='{.status.phase}' | grep -c "Ready") -eq 1 ]; do echo "waiting for radosNamespace to get created" && sleep 1; done"
     CLUSTER_ID_RBD=$($KUBECTL -n "$NAMESPACE" get cephblockpoolradosnamespace.ceph.rook.io/"$RADOS_NAMESPACE" -o jsonpath='{.status.info.clusterID}')
+    RBD_STORAGE_CLASS_NAME=ceph-rbd-$RADOS_NAMESPACE
   fi
   if [ -n "$SUBVOLUME_GROUP" ]; then
     createSubvolumeGroupCR
     timeout 20 sh -c "until [ $($KUBECTL -n "$NAMESPACE" get CephFilesystemSubVolumeGroup/"$SUBVOLUME_GROUP" -o jsonpath='{.status.phase}' | grep -c "Ready") -eq 1 ]; do echo "waiting for radosNamespace to get created" && sleep 1; done"
     CLUSTER_ID_CEPHFS=$($KUBECTL -n "$NAMESPACE" get cephfilesystemsubvolumegroup.ceph.rook.io/"$SUBVOLUME_GROUP" -o jsonpath='{.status.info.clusterID}')
+    CEPHFS_STORAGE_CLASS_NAME=cephfs-$SUBVOLUME_GROUP
   fi
 }
 
@@ -164,6 +167,23 @@ function importConfigMap() {
       --from-literal=maxMonId="$ROOK_EXTERNAL_MAX_MON_ID"
   else
     echo "configmap $MON_ENDPOINT_CONFIGMAP_NAME already exists"
+  fi
+}
+
+function createInputCommadConfigMap() {
+  if ! $KUBECTL -n "$NAMESPACE" get configmap "$EXTERNAL_COMMAND_CONFIGMAP_NAME" &>/dev/null; then
+    $KUBECTL -n "$NAMESPACE" \
+      create \
+      configmap \
+      "$EXTERNAL_COMMAND_CONFIGMAP_NAME" \
+      --from-literal=args="$ARGS"
+  else
+    echo "configmap $EXTERNAL_COMMAND_CONFIGMAP_NAME already exists, updating it"
+    $KUBECTL -n "$NAMESPACE" \
+      patch \
+      configmap \
+      "$EXTERNAL_COMMAND_CONFIGMAP_NAME" \
+      -p "$(jq -n --arg args "$ARGS" '{"data": {"args": $args}}')"
   fi
 }
 
@@ -389,6 +409,7 @@ createClusterNamespace
 importClusterID
 importSecret
 importConfigMap
+createInputCommadConfigMap
 if [ -n "$CSI_RBD_NODE_SECRET_NAME" ] && [ -n "$CSI_RBD_NODE_SECRET" ]; then
   importCsiRBDNodeSecret
 fi

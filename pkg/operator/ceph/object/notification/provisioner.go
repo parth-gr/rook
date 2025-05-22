@@ -76,7 +76,6 @@ func newS3Agent(p provisioner) (*object.S3Agent, error) {
 	adminOpsCtx, err := object.NewMultisiteAdminOpsContext(objContext, &objStore.Spec)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to get admin Ops context for CephObjectStore %q", p.objectStoreName)
-
 	}
 	accessKey, secretKey, err := getUserCredentials(adminOpsCtx, p.opManagerContext, p.owner)
 	if err != nil {
@@ -91,10 +90,7 @@ func newS3Agent(p provisioner) (*object.S3Agent, error) {
 		}
 	}
 
-	if insecureTLS {
-		return object.NewInsecureS3Agent(accessKey, secretKey, objContext.Endpoint, logger.LevelAt(capnslog.DEBUG))
-	}
-	return object.NewS3Agent(accessKey, secretKey, objContext.Endpoint, logger.LevelAt(capnslog.DEBUG), tlsCert)
+	return object.NewS3Agent(accessKey, secretKey, objContext.Endpoint, logger.LevelAt(capnslog.DEBUG), tlsCert, insecureTLS, nil)
 }
 
 // TODO: convert all rules without restrictions once the AWS SDK supports that

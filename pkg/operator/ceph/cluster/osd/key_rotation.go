@@ -57,7 +57,7 @@ func applyKeyRotationPlacement(spec *v1.PodSpec, labels map[string]string) {
 				LabelSelector: &metav1.LabelSelector{
 					MatchLabels: labels,
 				},
-				TopologyKey: v1.LabelHostname,
+				TopologyKey: k8sutil.LabelHostname(),
 			},
 		},
 	}
@@ -94,6 +94,12 @@ func (c *Cluster) getKeyRotationContainer(osdProps osdProperties, volumeMounts [
 			RunAsUser:              &runAsUser,
 			RunAsNonRoot:           &runAsNonRoot,
 			ReadOnlyRootFilesystem: &readOnlyRootFilesystem,
+			Capabilities: &v1.Capabilities{
+				Add: []v1.Capability{},
+				Drop: []v1.Capability{
+					"NET_RAW",
+				},
+			},
 		},
 		Resources: osdProps.resources,
 	}
@@ -137,6 +143,12 @@ func (c *Cluster) getKeyRotationPodTemplateSpec(osdProps osdProperties, osd OSDI
 		devices = append(devices, encryptionBlockDestinationCopy(devicesBasePath, bluestoreWalName))
 	}
 
+	if c.spec.Security.KeyManagementService.IsVaultKMS() {
+		volumeTLS, volumeMountTLS := kms.VaultVolumeAndMount(c.spec.Security.KeyManagementService.ConnectionDetails, "")
+		volumes = append(volumes, volumeTLS)
+		volumeMounts = append(volumeMounts, volumeMountTLS)
+	}
+
 	keyRotationContainer, err := c.getKeyRotationContainer(osdProps, volumeMounts, devices)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to generate key rotation container")
@@ -161,6 +173,7 @@ func (c *Cluster) getKeyRotationPodTemplateSpec(osdProps osdProperties, osd OSDI
 			HostNetwork:       c.spec.Network.IsHost(),
 			PriorityClassName: cephv1.GetOSDPriorityClassName(c.spec.PriorityClassNames),
 			SchedulerName:     osdProps.schedulerName,
+			SecurityContext:   &v1.PodSecurityContext{},
 		},
 	}
 	if c.spec.Network.IsHost() {
@@ -219,7 +232,7 @@ func (c *Cluster) makeKeyRotationCronJob(pvcName string, osd OSDInfo, osdProps o
 	return cronJob, nil
 }
 
-// reconcileKeyRotationCronJobs reconciles the key rotation cron jobs for the OSDs.
+// reconcileKeyRotationCronJob reconciles the key rotation cron jobs for the OSDs.
 func (c *Cluster) reconcileKeyRotationCronJob() error {
 	if !c.spec.Security.KeyRotation.Enabled {
 		listOpts := metav1.ListOptions{LabelSelector: fmt.Sprintf("%s=%s", k8sutil.AppAttr, keyRotationCronJobAppName)}
@@ -258,7 +271,7 @@ func (c *Cluster) reconcileKeyRotationCronJob() error {
 			return errors.Errorf("pvc name label %q for osd %q is empty",
 				OSDOverPVCLabelKey, osdDep.Name)
 		}
-		osdProps, err := c.getOSDPropsForPVC(pvcName, osd.DeviceClass)
+		osdProps, err := c.getOSDPropsForPVC(pvcName)
 		if err != nil {
 			return errors.Wrapf(err, "failed to generate config for osd %q", osdDep.Name)
 		}
@@ -266,7 +279,7 @@ func (c *Cluster) reconcileKeyRotationCronJob() error {
 			continue
 		}
 
-		logger.Infof("starting OSD key rotation cron job for osd %q", osd.ID)
+		logger.Infof("starting OSD key rotation cron job for osd %d", osd.ID)
 		cj, err := c.makeKeyRotationCronJob(pvcName, osd, osdProps)
 		if err != nil {
 			return errors.Wrap(err, "failed to make key rotation cron job")

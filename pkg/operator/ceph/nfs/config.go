@@ -101,6 +101,7 @@ NFS_CORE_PARAM {
 	Enable_NLM = false;
 	Enable_RQUOTA = false;
 	Protocols = 4;
+	allow_set_io_flusher_fail = true;
 }
 
 MDCACHE {
@@ -113,7 +114,7 @@ EXPORT_DEFAULTS {
 
 NFSv4 {
 	Delegations = false;
-	RecoveryBackend = 'rados_cluster';
+	RecoveryBackend = "rados_cluster";
 	Minor_Versions = 1, 2;
 }
 
@@ -128,7 +129,7 @@ RADOS_KV {
 RADOS_URLS {
 	ceph_conf = "` + cephclient.DefaultConfigFilePath() + `";
 	userid = ` + userID + `;
-	watch_url = '` + url + `';
+	watch_url = "` + url + `";
 }
 
 RGW {
@@ -290,7 +291,7 @@ func atomicPrependToConfigObject(
 	logger.Debugf("rados object %s will have config block prepended: %s", objInfoString, configBlock)
 
 	newConfig := fmt.Sprintf("%s%s", configBlock, string(rawObj))
-	if err := os.WriteFile(tempFile.Name(), []byte(newConfig), fs.FileMode(0644)); err != nil {
+	if err := os.WriteFile(tempFile.Name(), []byte(newConfig), fs.FileMode(0o644)); err != nil {
 		return errors.Wrapf(err, "failed to write new config content for object %s to temp file", objInfoString)
 	}
 
@@ -365,7 +366,7 @@ func atomicRemoveFromConfigObject(context *clusterd.Context, clusterInfo *cephcl
 	logger.Debugf("rados object %s will have config block removed: %s", objInfoString, configBlock)
 
 	newConfig := strings.ReplaceAll(string(rawObj), configBlock, "")
-	if err := os.WriteFile(tempFile.Name(), []byte(newConfig), fs.FileMode(0644)); err != nil {
+	if err := os.WriteFile(tempFile.Name(), []byte(newConfig), fs.FileMode(0o644)); err != nil {
 		return errors.Wrapf(err, "failed to write new config content for object %s to temp file", objInfoString)
 	}
 

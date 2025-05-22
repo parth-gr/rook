@@ -55,11 +55,9 @@ func (b *BlockOperation) Create(manifest string, size int) (string, error) {
 	args := []string{"apply", "-f", "-"}
 	result, err := b.k8sClient.KubectlWithStdin(manifest, args...)
 	if err != nil {
-		return "", fmt.Errorf("Unable to create block -- : %s", err)
-
+		return "", fmt.Errorf("unable to create block -- : %s", err)
 	}
 	return result, nil
-
 }
 
 func (b *BlockOperation) CreatePoolAndStorageClass(pvcNamespace, poolName, storageClassName, reclaimPolicy string) error {
@@ -130,11 +128,9 @@ func (b *BlockOperation) DeleteBlock(manifest string) (string, error) {
 	args := []string{"delete", "-f", "-"}
 	result, err := b.k8sClient.KubectlWithStdin(manifest, args...)
 	if err != nil {
-		return "", fmt.Errorf("Unable to delete block -- : %s", err)
-
+		return "", fmt.Errorf("unable to delete block -- : %s", err)
 	}
 	return result, nil
-
 }
 
 // List Function to list all the block images in all pools
@@ -161,7 +157,7 @@ func (b *BlockOperation) ListAllImages(clusterInfo *client.ClusterInfo) ([]Block
 func (b *BlockOperation) ListImagesInPool(clusterInfo *client.ClusterInfo, poolName string) ([]BlockImage, error) {
 	// for each pool, get further details about all the images in the pool
 	images := []BlockImage{}
-	cephImages, err := client.ListImages(b.k8sClient.MakeContext(), clusterInfo, poolName)
+	cephImages, err := client.ListImagesInPool(b.k8sClient.MakeContext(), clusterInfo, poolName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get images from pool %s: %+v", poolName, err)
 	}
@@ -182,7 +178,7 @@ func (b *BlockOperation) ListImagesInPool(clusterInfo *client.ClusterInfo, poolN
 // DeleteBlockImage Function to list all the blocks created/being managed by rook
 func (b *BlockOperation) DeleteBlockImage(clusterInfo *client.ClusterInfo, image BlockImage) error {
 	context := b.k8sClient.MakeContext()
-	return client.DeleteImage(context, clusterInfo, image.Name, image.PoolName)
+	return client.DeleteImageInPool(context, clusterInfo, image.Name, image.PoolName)
 }
 
 // CreateClientPod starts a pod that should have a block PVC.

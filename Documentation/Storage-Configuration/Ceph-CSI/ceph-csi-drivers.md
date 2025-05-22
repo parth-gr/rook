@@ -5,12 +5,12 @@ title: Ceph CSI Drivers
 There are three CSI drivers integrated with Rook that are used in different scenarios:
 
 * RBD: This block storage driver is optimized for RWO pod access where only one pod may access the
-  storage. [More information](../Block-Storage-RBD/block-storage.md).
+    storage. [More information](../Block-Storage-RBD/block-storage.md).
 * CephFS: This file storage driver allows for RWX with one or more pods accessing the same storage.
-  [More information](../Shared-Filesystem-CephFS/filesystem-storage.md).
+    [More information](../Shared-Filesystem-CephFS/filesystem-storage.md).
 * NFS (experimental): This file storage driver allows creating NFS exports that can be mounted on
-  pods, or directly via an NFS client from inside or outside the
-  Kubernetes cluster. [More information](../NFS/nfs-csi-driver.md)
+    pods, or directly via an NFS client from inside or outside the
+    Kubernetes cluster. [More information](../NFS/nfs-csi-driver.md)
 
 The Ceph Filesystem (CephFS) and RADOS Block Device (RBD) drivers are enabled automatically by
 the Rook operator. The NFS driver is disabled by default. All drivers will be started in the same
@@ -18,7 +18,7 @@ namespace as the operator when the first CephCluster CR is created.
 
 ## Supported Versions
 
-The supported Ceph CSI version is 3.3.0 or greater with Rook. Refer to ceph csi [releases](https://github.com/ceph/ceph-csi/releases)
+The two most recent Ceph CSI version are supported with Rook. Refer to ceph csi [releases](https://github.com/ceph/ceph-csi/releases)
 for more information.
 
 ## Static Provisioning
@@ -92,19 +92,6 @@ volumesnapshotclass, search for: `# csi-provisioner-name`
 
 All CSI pods are deployed with a sidecar container that provides a Prometheus
 metric for tracking whether the CSI plugin is alive and running.
-These metrics are meant to be scraped (collected) by Prometheus but can also be
-accessed through a GET request to a specific node as follows:
-
-`curl -X get http://[pod ip]:[liveness-port][liveness-path]  2>/dev/null | grep csi`
-
-For example:
-
-```console
-$ curl -X GET http://10.109.65.142:9080/metrics 2>/dev/null | grep csi
-# HELP csi_liveness Liveness Probe
-# TYPE csi_liveness gauge
-csi_liveness 1
-```
 
 Check the [monitoring documentation](../Monitoring/ceph-monitoring.md) to see how to integrate CSI
 liveness and GRPC metrics into Ceph monitoring.
@@ -179,9 +166,9 @@ that the controller inspects and forwards to one or more CSI-Addons sidecars for
 Deploy the controller by running the following commands:
 
 ```console
-kubectl create -f https://raw.githubusercontent.com/csi-addons/kubernetes-csi-addons/v0.8.0/deploy/controller/crds.yaml
-kubectl create -f https://raw.githubusercontent.com/csi-addons/kubernetes-csi-addons/v0.8.0/deploy/controller/rbac.yaml
-kubectl create -f https://raw.githubusercontent.com/csi-addons/kubernetes-csi-addons/v0.8.0/deploy/controller/setup-controller.yaml
+kubectl create -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/v0.12.0/crds.yaml
+kubectl create -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/v0.12.0/rbac.yaml
+kubectl create -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/v0.12.0/setup-controller.yaml
 ```
 
 This creates the required CRDs and configures permissions.
@@ -195,46 +182,59 @@ which are not enabled by default.
 Execute the following to enable the CSI-Addons sidecars:
 
 * Update the `rook-ceph-operator-config` configmap and patch the
- following configuration:
+    following configuration:
 
-```console
-kubectl patch cm rook-ceph-operator-config -nrook-ceph -p $'data:\n "CSI_ENABLE_CSIADDONS": "true"'
-```
+    ```console
+    kubectl patch cm rook-ceph-operator-config -nrook-ceph -p $'data:\n "CSI_ENABLE_CSIADDONS": "true"'
+    ```
 
 * After enabling `CSI_ENABLE_CSIADDONS` in the configmap, a new sidecar container named `csi-addons`
-will start automatically in the RBD CSI provisioner and nodeplugin pods.
+    will start automatically in the RBD CSI provisioner and nodeplugin pods.
 
 ### CSI-Addons Operations
 
 CSI-Addons supports the following operations:
 
 * Reclaim Space
-  * [Creating a ReclaimSpaceJob](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.8.0/docs/reclaimspace.md#reclaimspacejob)
-  * [Creating a ReclaimSpaceCronJob](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.8.0/docs/reclaimspace.md#reclaimspacecronjob)
-  * [Annotating PersistentVolumeClaims](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.8.0/docs/reclaimspace.md#annotating-perstentvolumeclaims)
-  * [Annotating Namespace](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.8.0/docs/reclaimspace.md#annotating-namespace)
+    * [Creating a ReclaimSpaceJob](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/reclaimspace.md#reclaimspacejob)
+    * [Creating a ReclaimSpaceCronJob](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/reclaimspace.md#reclaimspacecronjob)
+    * [Annotating PersistentVolumeClaims](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/reclaimspace.md#annotating-perstentvolumeclaims)
+    * [Annotating Namespace](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/reclaimspace.md#annotating-namespace)
+    * [Annotating StorageClass](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/reclaimspace.md#annotating-storageclass)
 * Network Fencing
-  * [Creating a NetworkFence](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.8.0/docs/networkfence.md)
+    * [Creating a NetworkFence](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/networkfence.md)
 * Volume Replication
-  * [Creating VolumeReplicationClass](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.8.0/docs/volumereplicationclass.md)
-  * [Creating VolumeReplication CR](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.8.0/docs/volumereplication.md)
+    * [Creating VolumeReplicationClass](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/volumereplicationclass.md)
+    * [Creating VolumeReplication CR](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/volumereplication.md)
+* Key Rotation Job for PV encryption
+    * [Creating EncryptionKeyRotationJob](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/encryptionkeyrotation.md#encryptionkeyrotationjob)
+    * [Creating EncryptionKeyRotationCronJob](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/encryptionkeyrotation.md#encryptionkeyrotationcronjob)
+    * [Annotating PersistentVolumeClaims](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/encryptionkeyrotation.md#annotating-persistentvolumeclaims)
+    * [Annotating Namespace](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/encryptionkeyrotation.md#annotating-namespace)
+    * [Annotating StorageClass](https://github.com/csi-addons/kubernetes-csi-addons/blob/v0.12.0/docs/encryptionkeyrotation.md#annotating-storageclass)
 
-## Enable RBD Encryption Support
+## Enable RBD and CephFS Encryption Support
 
-Ceph-CSI supports encrypting individual RBD PersistentVolumeClaims with LUKS. More details can be found
-[here](https://github.com/ceph/ceph-csi/blob/v3.6.0/docs/deploy-rbd.md#encryption-for-rbd-volumes)
-including a full list of supported encryption configurations. A sample configmap can be found
-[here](https://github.com/ceph/ceph-csi/blob/v3.6.0/examples/kms/vault/kms-config.yaml).
+Ceph-CSI supports encrypting PersistentVolumeClaims (PVCs) for both RBD and CephFS.
+This can be achieved using LUKS for RBD and fscrypt for CephFS. More details on encrypting RBD PVCs can be found
+[here](https://github.com/ceph/ceph-csi/blob/v3.14.0/docs/deploy-rbd.md#encryption-for-rbd-volumes),
+which includes a full list of supported encryption configurations.
+More details on encrypting CephFS PVCs can be found [here](https://github.com/ceph/ceph-csi/blob/v3.14.0/docs/deploy-cephfs.md#cephfs-volume-encryption).
+A sample KMS configmap can be found [here](https://github.com/ceph/ceph-csi/blob/v3.14.0/examples/kms/vault/kms-config.yaml).
+
+!!! note
+    Not all KMS are compatible with fscrypt. Generally, KMS that either store secrets to use directly (like Vault)
+    or allow access to the plain password (like Kubernetes Secrets) are compatible.
 
 !!! note
     Rook also supports OSD-level encryption (see `encryptedDevice` option [here](../../CRDs/Cluster/ceph-cluster-crd.md#osd-configuration-settings)).
 
 Using both RBD PVC encryption and OSD encryption at the same time will lead to double encryption and may reduce read/write performance.
 
-Existing Ceph clusters can also enable Ceph-CSI RBD PVC encryption support and multiple kinds of encryption
+Existing Ceph clusters can also enable Ceph-CSI PVC encryption support and multiple kinds of encryption
 KMS can be used on the same Ceph cluster using different storageclasses.
 
-The following steps demonstrate how to enable support for encryption:
+The following steps demonstrate the common process for enabling encryption support for both RBD and CephFS:
 
 * Create the `rook-ceph-csi-kms-config` configmap with required encryption configuration in
 the same namespace where the Rook operator is deployed. An example is shown below:
@@ -256,7 +256,7 @@ data:
 ```
 
 * Update the `rook-ceph-operator-config` configmap and patch the
- following configurations
+    following configurations
 
 ```console
 kubectl patch cm rook-ceph-operator-config -nrook-ceph -p $'data:\n "CSI_ENABLE_ENCRYPTION": "true"'
@@ -275,8 +275,9 @@ stringData:
   encryptionPassphrase: test-encryption
 ```
 
-* Create a new [storageclass](https://github.com/rook/rook/blob/master/deploy/examples/csi/rbd/storageclass.yaml) with additional parameters
-`encrypted: "true"` and `encryptionKMSID: "<key used in configmap>"`. An example is show below:
+* Create a new [RBD storageclass](https://github.com/rook/rook/blob/master/deploy/examples/csi/rbd/storageclass.yaml) or
+[CephFS storageclass](https://github.com/rook/rook/blob/master/deploy/examples/csi/cephfs/storageclass.yaml) with additional parameters
+`encrypted: "true"` and `encryptionKMSID: "<key used in configmap>"`. An example is shown below:
 
 ```yaml
 apiVersion: storage.k8s.io/v1
@@ -291,6 +292,9 @@ parameters:
 ```
 
 * PVCs created using the new storageclass will be encrypted.
+
+!!! note
+    CephFS encryption requires fscrypt support in Linux kernel, kernel version 6.6 or higher.
 
 ## Enable Read affinity for RBD and CephFS volumes
 

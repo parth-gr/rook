@@ -41,21 +41,22 @@ func TestNodeAffinity(t *testing.T) {
 	setCommonMonProperties(c, 0, cephv1.MonSpec{Count: 3, AllowMultiplePerNode: true}, "myversion")
 
 	c.spec.Placement = map[cephv1.KeyType]cephv1.Placement{}
-	c.spec.Placement[cephv1.KeyMon] = cephv1.Placement{NodeAffinity: &v1.NodeAffinity{
-		RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
-			NodeSelectorTerms: []v1.NodeSelectorTerm{
-				{
-					MatchExpressions: []v1.NodeSelectorRequirement{
-						{
-							Key:      "label",
-							Operator: v1.NodeSelectorOpIn,
-							Values:   []string{"bar", "baz"},
+	c.spec.Placement[cephv1.KeyMon] = cephv1.Placement{
+		NodeAffinity: &v1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+				NodeSelectorTerms: []v1.NodeSelectorTerm{
+					{
+						MatchExpressions: []v1.NodeSelectorRequirement{
+							{
+								Key:      "label",
+								Operator: v1.NodeSelectorOpIn,
+								Values:   []string{"bar", "baz"},
+							},
 						},
 					},
 				},
 			},
 		},
-	},
 	}
 
 	// label nodes so they appear as not schedulable / invalid
@@ -86,7 +87,7 @@ func TestHostNetworkSameNode(t *testing.T) {
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Quincy, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Squid, c.spec)
 	assert.Error(t, err)
 }
 
@@ -104,7 +105,7 @@ func TestPodMemory(t *testing.T) {
 	c := newCluster(context, namespace, true, r)
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Quincy, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Squid, c.spec)
 	assert.NoError(t, err)
 
 	// Test REQUEST == LIMIT
@@ -120,7 +121,7 @@ func TestPodMemory(t *testing.T) {
 	c = newCluster(context, namespace, true, r)
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Quincy, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Squid, c.spec)
 	assert.NoError(t, err)
 
 	// Test LIMIT != REQUEST but obviously LIMIT > REQUEST
@@ -136,7 +137,7 @@ func TestPodMemory(t *testing.T) {
 	c = newCluster(context, namespace, true, r)
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Quincy, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Squid, c.spec)
 	assert.NoError(t, err)
 
 	// Test valid case where pod resource is set appropriately
@@ -152,7 +153,7 @@ func TestPodMemory(t *testing.T) {
 	c = newCluster(context, namespace, true, r)
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Quincy, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Squid, c.spec)
 	assert.NoError(t, err)
 
 	// Test no resources were specified on the pod
@@ -160,9 +161,8 @@ func TestPodMemory(t *testing.T) {
 	c = newCluster(context, namespace, true, r)
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Quincy, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookImage, cephver.Squid, c.spec)
 	assert.NoError(t, err)
-
 }
 
 func TestHostNetwork(t *testing.T) {
@@ -246,4 +246,11 @@ func TestGetNodeInfoFromNode(t *testing.T) {
 	info, err = getNodeInfoFromNode(*node)
 	assert.NoError(t, err)
 	assert.Equal(t, "1.2.3.4", info.Address)
+
+	node.Annotations = map[string]string{
+		monIPAnnotation: "9.8.7.6",
+	}
+	info, err = getNodeInfoFromNode(*node)
+	assert.NoError(t, err)
+	assert.Equal(t, "9.8.7.6", info.Address)
 }

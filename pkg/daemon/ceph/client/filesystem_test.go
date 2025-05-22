@@ -48,7 +48,8 @@ func TestFilesystemListMarshal(t *testing.T) {
 			MetadataPool:   "myfs1-metadata",
 			MetadataPoolID: 2,
 			DataPools:      []string{"myfs1-data"},
-			DataPoolIDs:    []int{1}},
+			DataPoolIDs:    []int{1},
+		},
 	}
 
 	assert.Equal(t, expectedFilesystems, filesystems)
@@ -520,9 +521,33 @@ func TestGetMDSDump(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestFSHasStandby(t *testing.T) {
+	// Not found in an empty list
+	fsName := "foo"
+	dump := &MDSDump{}
+	assert.False(t, filesystemHasStandby(dump, fsName))
+
+	// Not found with a non-matching name
+	dump = &MDSDump{Standbys: []MDSStandBy{{Name: "foo-cd"}}}
+	assert.False(t, filesystemHasStandby(dump, fsName))
+
+	// Found in the list with -a suffix
+	dump = &MDSDump{Standbys: []MDSStandBy{{Name: "foo-a"}}}
+	assert.True(t, filesystemHasStandby(dump, fsName))
+
+	// Found in the list with -c suffix
+	dump = &MDSDump{Standbys: []MDSStandBy{{Name: "foo-c"}}}
+	assert.True(t, filesystemHasStandby(dump, fsName))
+
+	// Does not match another filesystem
+	fsName = "bar"
+	assert.False(t, filesystemHasStandby(dump, fsName))
+}
+
 func TestWaitForNoStandbys(t *testing.T) {
 	executor := &exectest.MockExecutor{}
 	context := &clusterd.Context{Executor: executor}
+	fsName := "rook-ceph-filesystem"
 	executor.MockExecuteCommandWithOutput = func(command string, args ...string) (string, error) {
 		logger.Infof("Command: %s %v", command, args)
 		if args[0] == "fs" {
@@ -542,7 +567,7 @@ func TestWaitForNoStandbys(t *testing.T) {
 		return "", errors.Errorf("unexpected ceph command %q", args)
 	}
 
-	err := WaitForNoStandbys(context, AdminTestClusterInfo("mycluster"), 6*time.Second)
+	err := WaitForNoStandbys(context, AdminTestClusterInfo("mycluster"), fsName, time.Millisecond, 5*time.Millisecond)
 	assert.Error(t, err)
 
 	executor.MockExecuteCommandWithOutput = func(command string, args ...string) (string, error) {
@@ -555,7 +580,7 @@ func TestWaitForNoStandbys(t *testing.T) {
 		return "", errors.Errorf("unexpected ceph command %q", args)
 	}
 
-	err = WaitForNoStandbys(context, AdminTestClusterInfo("mycluster"), 6*time.Second)
+	err = WaitForNoStandbys(context, AdminTestClusterInfo("mycluster"), fsName, time.Millisecond, 5*time.Millisecond)
 	assert.Error(t, err)
 
 	firstCall := true
@@ -582,9 +607,8 @@ func TestWaitForNoStandbys(t *testing.T) {
 		}
 		return "", errors.Errorf("unexpected ceph command %q", args)
 	}
-	err = WaitForNoStandbys(context, AdminTestClusterInfo("mycluster"), 6*time.Second)
+	err = WaitForNoStandbys(context, AdminTestClusterInfo("mycluster"), fsName, time.Millisecond, 5*time.Millisecond)
 	assert.NoError(t, err)
-
 }
 
 func TestListSubvolumeGroups(t *testing.T) {

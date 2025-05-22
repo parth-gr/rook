@@ -18,6 +18,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -38,10 +39,11 @@ type OSDUsage struct {
 type OSDNodeUsage struct {
 	ID          int         `json:"id"`
 	Name        string      `json:"name"`
+	DeviceClass string      `json:"device_class"`
 	CrushWeight json.Number `json:"crush_weight"`
 	Depth       json.Number `json:"depth"`
 	Reweight    json.Number `json:"reweight"`
-	KB          json.Number `json:"kb"`
+	KB          json.Number `json:"kb"` // KB is in KiB units
 	UsedKB      json.Number `json:"kb_used"`
 	AvailKB     json.Number `json:"kb_avail"`
 	Utilization json.Number `json:"utilization"`
@@ -65,8 +67,11 @@ type OSDDump struct {
 		Up  json.Number `json:"up"`
 		In  json.Number `json:"in"`
 	} `json:"osds"`
-	Flags          string              `json:"flags"`
-	CrushNodeFlags map[string][]string `json:"crush_node_flags"`
+	Flags             string              `json:"flags"`
+	CrushNodeFlags    map[string][]string `json:"crush_node_flags"`
+	FullRatio         float64             `json:"full_ratio"`
+	BackfillFullRatio float64             `json:"backfillfull_ratio"`
+	NearFullRatio     float64             `json:"nearfull_ratio"`
 }
 
 // IsFlagSet checks if an OSD flag is set
@@ -144,19 +149,18 @@ type SafeToDestroyStatus struct {
 // OsdTree represents the CRUSH hierarchy
 type OsdTree struct {
 	Nodes []struct {
-		ID          int    `json:"id"`
-		Name        string `json:"name"`
-		Type        string `json:"type"`
-		TypeID      int    `json:"type_id"`
-		Children    []int  `json:"children,omitempty"`
-		PoolWeights struct {
-		} `json:"pool_weights,omitempty"`
-		CrushWeight     float64 `json:"crush_weight,omitempty"`
-		Depth           int     `json:"depth,omitempty"`
-		Exists          int     `json:"exists,omitempty"`
-		Status          string  `json:"status,omitempty"`
-		Reweight        float64 `json:"reweight,omitempty"`
-		PrimaryAffinity float64 `json:"primary_affinity,omitempty"`
+		ID              int      `json:"id"`
+		Name            string   `json:"name"`
+		Type            string   `json:"type"`
+		TypeID          int      `json:"type_id"`
+		Children        []int    `json:"children,omitempty"`
+		PoolWeights     struct{} `json:"pool_weights,omitempty"`
+		CrushWeight     float64  `json:"crush_weight,omitempty"`
+		Depth           int      `json:"depth,omitempty"`
+		Exists          int      `json:"exists,omitempty"`
+		Status          string   `json:"status,omitempty"`
+		Reweight        float64  `json:"reweight,omitempty"`
+		PrimaryAffinity float64  `json:"primary_affinity,omitempty"`
 	} `json:"nodes"`
 	Stray []struct {
 		ID              int     `json:"id"`
@@ -214,6 +218,66 @@ func GetOSDUsage(context *clusterd.Context, clusterInfo *ClusterInfo) (*OSDUsage
 	}
 
 	return &osdUsage, nil
+}
+
+func convertKibibytesToTebibytes(kib string) (float64, error) {
+	kibFloat, err := strconv.ParseFloat(kib, 64)
+	if err != nil {
+		return float64(0), errors.Wrap(err, "failed to convert string to float")
+	}
+	return kibFloat / float64(1024*1024*1024), nil
+}
+
+func ResizeOsdCrushWeight(actualOSD OSDNodeUsage, ctx *clusterd.Context, clusterInfo *ClusterInfo) (bool, error) {
+	currentCrushWeight, err := strconv.ParseFloat(actualOSD.CrushWeight.String(), 64)
+	if err != nil {
+		return false, errors.Wrapf(err, "failed converting string to float for osd.%d crush weight %q", actualOSD.ID, actualOSD.CrushWeight.String())
+	}
+	// actualOSD.KB is in KiB units
+	calculatedCrushWeight, err := convertKibibytesToTebibytes(actualOSD.KB.String())
+	if err != nil {
+		return false, errors.Wrapf(err, "failed to convert KiB to TiB for osd.%d crush weight %q", actualOSD.ID, actualOSD.KB.String())
+	}
+
+	// do not reweight if the calculated crush weight is 0 or less than equal to actualCrushWeight or there percentage resize is less than 1 percent
+	if calculatedCrushWeight == float64(0) {
+		logger.Debugf("osd size is 0 for osd.%d, not resizing the crush weights", actualOSD.ID)
+		return false, nil
+	} else if calculatedCrushWeight <= currentCrushWeight {
+		logger.Debugf("calculatedCrushWeight %f is less then current currentCrushWeight %f for osd.%d, not resizing the crush weights", calculatedCrushWeight, currentCrushWeight, actualOSD.ID)
+		return false, nil
+	} else if math.Abs(((calculatedCrushWeight - currentCrushWeight) / currentCrushWeight)) <= 0.01 {
+		logger.Debugf("calculatedCrushWeight %f is less then 1 percent increased from currentCrushWeight %f for osd.%d, not resizing the crush weights", calculatedCrushWeight, currentCrushWeight, actualOSD.ID)
+		return false, nil
+	}
+
+	calculatedCrushWeightString := fmt.Sprintf("%f", calculatedCrushWeight)
+	logger.Infof("updating osd.%d crush weight to %q for cluster in namespace %q", actualOSD.ID, calculatedCrushWeightString, clusterInfo.Namespace)
+	args := []string{"osd", "crush", "reweight", fmt.Sprintf("osd.%d", actualOSD.ID), calculatedCrushWeightString}
+	buf, err := NewCephCommand(ctx, clusterInfo, args).Run()
+	if err != nil {
+		return false, errors.Wrapf(err, "failed to reweight osd.%d for cluster in namespace %q from actual crush weight %f to calculated crush weight %f: %s", actualOSD.ID, clusterInfo.Namespace, currentCrushWeight, calculatedCrushWeight, string(buf))
+	}
+
+	return true, nil
+}
+
+func SetDeviceClass(context *clusterd.Context, clusterInfo *ClusterInfo, osdID int, deviceClass string) error {
+	// First remove the existing device class
+	args := []string{"osd", "crush", "rm-device-class", fmt.Sprintf("osd.%d", osdID)}
+	buf, err := NewCephCommand(context, clusterInfo, args).Run()
+	if err != nil {
+		return errors.Wrap(err, "failed to remove device class. "+string(buf))
+	}
+
+	// Second, apply the desired device class
+	args = []string{"osd", "crush", "set-device-class", deviceClass, fmt.Sprintf("osd.%d", osdID)}
+	buf, err = NewCephCommand(context, clusterInfo, args).Run()
+	if err != nil {
+		return errors.Wrap(err, "failed to set the device class. "+string(buf))
+	}
+
+	return nil
 }
 
 func GetOSDPerfStats(context *clusterd.Context, clusterInfo *ClusterInfo) (*OSDPerfStats, error) {
@@ -382,4 +446,23 @@ func SetPrimaryAffinity(context *clusterd.Context, clusterInfo *ClusterInfo, osd
 	}
 	logger.Infof("successfully applied osd.%d primary-affinity %q", osdID, affinity)
 	return nil
+}
+
+type OSDMetadata struct {
+	Id       int    `json:"id"`
+	HostName string `json:"hostname"`
+}
+
+// GetOSDMetadata returns the output of `ceph osd metadata`
+func GetOSDMetadata(context *clusterd.Context, clusterInfo *ClusterInfo) (*[]OSDMetadata, error) {
+	args := []string{"osd", "metadata"}
+	buf, err := NewCephCommand(context, clusterInfo, args).Run()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get osd metadata")
+	}
+	var osdMetadata []OSDMetadata
+	if err := json.Unmarshal(buf, &osdMetadata); err != nil {
+		return nil, errors.Wrap(err, "failed to unmarshal osd metadata response")
+	}
+	return &osdMetadata, nil
 }

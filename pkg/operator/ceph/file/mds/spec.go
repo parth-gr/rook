@@ -43,7 +43,6 @@ const (
 )
 
 func (c *Cluster) makeDeployment(mdsConfig *mdsConfig, fsNamespacedname types.NamespacedName) (*apps.Deployment, error) {
-
 	mdsContainer := c.makeMdsDaemonContainer(mdsConfig, fsNamespacedname.Name)
 	mdsContainer = cephconfig.ConfigureStartupProbe(mdsContainer, c.fs.Spec.MetadataServer.StartupProbe)
 	mdsContainer = cephconfig.ConfigureLivenessProbe(mdsContainer, c.fs.Spec.MetadataServer.LivenessProbe)
@@ -65,6 +64,7 @@ func (c *Cluster) makeDeployment(mdsConfig *mdsConfig, fsNamespacedname types.Na
 			Volumes:            controller.DaemonVolumes(mdsConfig.DataPathMap, mdsConfig.ResourceName, c.clusterSpec.DataDirHostPath),
 			HostNetwork:        c.clusterSpec.Network.IsHost(),
 			PriorityClassName:  c.fs.Spec.MetadataServer.PriorityClassName,
+			SecurityContext:    &v1.PodSecurityContext{},
 			ServiceAccountName: k8sutil.DefaultServiceAccount,
 		},
 	}
@@ -76,7 +76,7 @@ func (c *Cluster) makeDeployment(mdsConfig *mdsConfig, fsNamespacedname types.Na
 	if c.clusterSpec.LogCollector.Enabled {
 		shareProcessNamespace := true
 		podSpec.Spec.ShareProcessNamespace = &shareProcessNamespace
-		podSpec.Spec.Containers = append(podSpec.Spec.Containers, *controller.LogCollectorContainer(fmt.Sprintf("ceph-mds.%s", mdsConfig.DaemonID), c.clusterInfo.Namespace, *c.clusterSpec))
+		podSpec.Spec.Containers = append(podSpec.Spec.Containers, *controller.LogCollectorContainer(fmt.Sprintf("ceph-mds.%s", mdsConfig.DaemonID), c.clusterInfo.Namespace, *c.clusterSpec, nil))
 	}
 
 	c.fs.Spec.MetadataServer.Annotations.ApplyToObjectMeta(&podSpec.ObjectMeta)
@@ -94,8 +94,9 @@ func (c *Cluster) makeDeployment(mdsConfig *mdsConfig, fsNamespacedname types.Na
 			Selector: &metav1.LabelSelector{
 				MatchLabels: c.podLabels(mdsConfig, false),
 			},
-			Template: podSpec,
-			Replicas: &replicas,
+			RevisionHistoryLimit: controller.RevisionHistoryLimit(),
+			Template:             podSpec,
+			Replicas:             &replicas,
 			Strategy: apps.DeploymentStrategy{
 				Type: apps.RecreateDeploymentStrategyType,
 			},

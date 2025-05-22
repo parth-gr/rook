@@ -43,6 +43,7 @@ The first time a new release branch is made, the branch is created from `master`
 tag it, and push the tag upstream.
 
 Example:
+
 ```console
 BRANCH_NAME=release-1.13
 git fetch —all
@@ -79,6 +80,14 @@ After the PR is merged, you can tag the release with the beta tag (`v1.13.0-beta
 
 **IMPORTANT** Before tagging the release, open a new PR to update the documentation and example manifest tags to the release version.
 
+The script `set-release-ver.sh` can help preparing these changes.
+It takes the new version as its only argument for invocation.
+
+example:
+```console
+build/release/set-release-ver.sh v1.17.2
+```
+
 To publish a new patch release build, follow these steps:
 
 1. Make sure all needed PRs are merged to the release branch
@@ -88,7 +97,7 @@ To publish a new patch release build, follow these steps:
 4. Tag the branch:
 
     ```console
-    # make sure no files are checked out locally, then proceed:
+    # make sure no files are modified locally, then proceed:
     BRANCH_NAME=<release branch> # e.g., release-1.12
     git fetch --all
     git checkout $BRANCH_NAME

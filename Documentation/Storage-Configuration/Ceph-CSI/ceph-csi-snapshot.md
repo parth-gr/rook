@@ -4,14 +4,7 @@ title: Snapshots
 
 ## Prerequisites
 
-- Rook officially supports v1 snapshots for Kubernetes v1.20+.
-
-- Install the snapshot controller and snapshot v1 CRD as required. More info can be found [here](https://github.com/kubernetes-csi/external-snapshotter/tree/v6.0.1#usage).
-
-!!! note
-    If only Alpha snapshots are available, enable snapshotter in `rook-ceph-operator-config` or helm chart `values.yaml`, change the external-snapshotter image to `registry.k8s.io/sig-storage/csi-snapshotter:v1.2.2` and refer to the [alpha snapshots documentation](https://github.com/rook/rook/blob/release-1.3/Documentation/ceph-csi-drivers.md#rbd-snapshots)
-
-    VolumeSnapshot betav1 is deprecated in Kubernetes 1.20+ and removed in 1.24.0. If you still require betav1 snapshots, change the external-snapshotter image to `registry.k8s.io/sig-storage/csi-snapshotter:v5.0.1` and refer to the [betav1 snapshots documentation](https://rook.github.io/docs/rook/v1.8/ceph-csi-snapshot.html#rbd-snapshots)
+- Install the [snapshot controller and snapshot v1 CRD](https://github.com/kubernetes-csi/external-snapshotter/tree/master#usage).
 
 - We also need a `VolumeSnapshotClass` for volume snapshot to work. The purpose of a `VolumeSnapshotClass` is
 defined in [the kubernetes
@@ -24,13 +17,9 @@ In short, as the documentation describes it:
     VolumeSnapshotClass provides a way to describe the "classes" of storage when
     provisioning a volume snapshot.
 
-## Upgrade Snapshot API
-
-If your Kubernetes version is updated to a newer version of the snapshot API, follow the upgrade guide [here](https://github.com/kubernetes-csi/external-snapshotter/tree/v4.0.0#upgrade) to upgrade from v1alpha1 to v1beta1, or v1beta1 to v1.
-
 ## RBD Snapshots
 
-### VolumeSnapshotClass
+### RBD VolumeSnapshotClass
 
 In [VolumeSnapshotClass](https://github.com/rook/rook/tree/master/deploy/examples/csi/rbd/snapshotclass.yaml),
 the `csi.storage.k8s.io/snapshotter-secret-name` parameter should reference the
@@ -73,11 +62,20 @@ rbd-pvc-snapshot   true         rbd-pvc                             1Gi         
 The snapshot will be ready to restore to a new PVC when the `READYTOUSE` field of the
 `volumesnapshot` is set to true.
 
-### Restore the snapshot to a new PVC
+### Restore the RBD snapshot to a new PVC
 
 In [pvc-restore](https://github.com/rook/rook/tree/master/deploy/examples/csi/rbd/pvc-restore.yaml),
 `dataSource` should be the name of the `VolumeSnapshot` previously
-created. The `dataSource` kind should be the `VolumeSnapshot`.
+created. The `dataSource` kind should be the `VolumeSnapshot`. The `storageClassName`
+can be any RBD storageclass.
+
+Please Note:
+    * `provisioner` must be the same for both the Parent PVC and the restored PVC.
+    * The non-encrypted PVC cannot be restored to an encrypted one and vice-versa.
+        * encrypted -> encrypted (possible)
+        * non-encrypted -> non-encrypted (possible)
+        * encrypted -> non-encrypted (not possible)
+        * non-encrypted -> encrypted (not possible)
 
 Create a new PVC from the snapshot
 
@@ -106,7 +104,7 @@ kubectl delete -f deploy/examples/csi/rbd/snapshotclass.yaml
 
 ## CephFS Snapshots
 
-### VolumeSnapshotClass
+### CephFS VolumeSnapshotClass
 
 In [VolumeSnapshotClass](https://github.com/rook/rook/tree/master/deploy/examples/csi/cephfs/snapshotclass.yaml),
 the `csi.storage.k8s.io/snapshotter-secret-name` parameter should reference the
@@ -149,7 +147,7 @@ cephfs-pvc-snapshot   true         cephfs-pvc                         1Gi       
 The snapshot will be ready to restore to a new PVC when `READYTOUSE` field of the
 `volumesnapshot` is set to true.
 
-### Restore the snapshot to a new PVC
+### Restore the CephFS snapshot to a new PVC
 
 In
 [pvc-restore](https://github.com/rook/rook/tree/master/deploy/examples/csi/cephfs/pvc-restore.yaml),
@@ -180,8 +178,3 @@ kubectl delete -f deploy/examples/csi/cephfs/pvc-restore.yaml
 kubectl delete -f deploy/examples/csi/cephfs/snapshot.yaml
 kubectl delete -f deploy/examples/csi/cephfs/snapshotclass.yaml
 ```
-
-## Limitations
-
-- There is a limit of 400 snapshots per cephFS filesystem.
-- The PVC cannot be deleted if it has snapshots. make sure all the snapshots on the PVC are deleted before you delete the PVC.

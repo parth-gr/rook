@@ -2,6 +2,76 @@
 title: Ceph Common Issues
 ---
 
+<!-- markdownlint-disable MD024 -->
+<!-- allow duplicate headers in this file -->
+
+<!-- omit in toc -->
+## Topics
+
+- [Troubleshooting Techniques](#troubleshooting-techniques)
+    - [Ceph Tools](#ceph-tools)
+        - [Tools in the Rook Toolbox](#tools-in-the-rook-toolbox)
+        - [Ceph Commands](#ceph-commands)
+- [Cluster failing to service requests](#cluster-failing-to-service-requests)
+    - [Symptoms](#symptoms)
+    - [Investigation](#investigation)
+    - [Solution](#solution)
+- [Monitors are the only pods running](#monitors-are-the-only-pods-running)
+    - [Symptoms](#symptoms-1)
+    - [Investigation](#investigation-1)
+        - [Operator fails to connect to the mon](#operator-fails-to-connect-to-the-mon)
+        - [Solution](#solution-1)
+        - [Failing mon pod](#failing-mon-pod)
+        - [Solution](#solution-2)
+- [PVCs stay in pending state](#pvcs-stay-in-pending-state)
+    - [Symptoms](#symptoms-2)
+    - [Investigation](#investigation-2)
+        - [Confirm if there are OSDs](#confirm-if-there-are-osds)
+        - [OSD Prepare Logs](#osd-prepare-logs)
+        - [CSI Driver](#csi-driver)
+        - [Operator unresponsiveness](#operator-unresponsiveness)
+    - [Solution](#solution-3)
+- [OSD pods are failing to start](#osd-pods-are-failing-to-start)
+    - [Symptoms](#symptoms-3)
+    - [Investigation](#investigation-3)
+    - [Solution](#solution-4)
+- [OSD pods are not created on my devices](#osd-pods-are-not-created-on-my-devices)
+    - [Symptoms](#symptoms-4)
+    - [Investigation](#investigation-4)
+    - [Solution](#solution-5)
+- [Node hangs after reboot](#node-hangs-after-reboot)
+    - [Symptoms](#symptoms-5)
+    - [Investigation](#investigation-5)
+    - [Solution](#solution-6)
+- [Using multiple shared filesystem (CephFS) is attempted on a kernel version older than 4.7](#using-multiple-shared-filesystem-cephfs-is-attempted-on-a-kernel-version-older-than-47)
+    - [Symptoms](#symptoms-6)
+    - [Solution](#solution-7)
+- [Set debug log level for all Ceph daemons](#set-debug-log-level-for-all-ceph-daemons)
+- [Activate log to file for a particular Ceph daemon](#activate-log-to-file-for-a-particular-ceph-daemon)
+- [A worker node using RBD devices hangs up](#a-worker-node-using-rbd-devices-hangs-up)
+    - [Symptoms](#symptoms-7)
+    - [Investigation](#investigation-6)
+    - [Solution](#solution-8)
+- [Too few PGs per OSD warning is shown](#too-few-pgs-per-osd-warning-is-shown)
+    - [Symptoms](#symptoms-8)
+    - [Solution](#solution-9)
+- [LVM metadata can be corrupted with OSD on LV-backed PVC](#lvm-metadata-can-be-corrupted-with-osd-on-lv-backed-pvc)
+    - [Symptoms](#symptoms-9)
+    - [Solution](#solution-10)
+- [OSD prepare job fails due to low aio-max-nr setting](#osd-prepare-job-fails-due-to-low-aio-max-nr-setting)
+- [Unexpected partitions created](#unexpected-partitions-created)
+    - [Symptoms](#symptoms-10)
+    - [Solution](#solution-11)
+        - [Recover from corruption (v1.6.0-v1.6.7)](#recover-from-corruption-v160-v167)
+- [Operator environment variables are ignored](#operator-environment-variables-are-ignored)
+    - [Symptoms](#symptoms-11)
+    - [Investigation](#investigation-7)
+    - [Solution](#solution-12)
+- [The cluster is in an unhealthy state or fails to configure when LimitNOFILE=infinity in containerd](#the-cluster-is-in-an-unhealthy-state-or-fails-to-configure-when-limitnofileinfinity-in-containerd)
+    - [Symptoms](#symptoms-12)
+    - [Solution](#solution-13)
+
+
 Many of these problem cases are hard to summarize down to a short phrase that adequately describes the problem. Each problem will start with a bulleted list of symptoms. Keep in mind that all symptoms may not apply depending on the configuration of Rook. If the majority of the symptoms are seen there is a fair chance you are experiencing that problem.
 
 If after trying the suggestions found on this page and the problem is not resolved, the Rook team is very happy to help you troubleshoot the issues in their Slack channel. Once you have [registered for the Rook Slack](https://slack.rook.io), proceed to the `#ceph` channel to ask for assistance.
@@ -13,7 +83,7 @@ See also the [CSI Troubleshooting Guide](../Troubleshooting/ceph-csi-common-issu
 There are two main categories of information you will need to investigate issues in the cluster:
 
 1. Kubernetes status and logs documented [here](common-issues.md)
-1. Ceph cluster status (see upcoming [Ceph tools](#ceph-tools) section)
+2. Ceph cluster status (see upcoming [Ceph tools](#ceph-tools) section)
 
 ### Ceph Tools
 
@@ -22,14 +92,14 @@ After you verify the basic health of the running pods, next you will want to run
 * Logs on a specific node to find why a PVC is failing to mount
 * See the [log collection topic](../Storage-Configuration/Advanced/ceph-configuration.md#log-collection) for a script that will help you gather the logs
 * Other artifacts:
-  * The monitors that are expected to be in quorum: `kubectl -n <cluster-namespace> get configmap rook-ceph-mon-endpoints -o yaml | grep data`
+    * The monitors that are expected to be in quorum: `kubectl -n <cluster-namespace> get configmap rook-ceph-mon-endpoints -o yaml | grep data`
 
 #### Tools in the Rook Toolbox
 
 The [rook-ceph-tools pod](ceph-toolbox.md) provides a simple environment to run Ceph tools. Once the pod is up and running, connect to the pod to execute Ceph commands to evaluate that current state of the cluster.
 
 ```console
-kubectl -n rook-ceph exec -it $(kubectl -n rook-ceph get pod -l "app=rook-ceph-tools" -o jsonpath='{.items[*].metadata.name}') bash
+kubectl -n rook-ceph exec -it $(kubectl -n rook-ceph get pod -l "app=rook-ceph-tools" -o jsonpath='{.items[*].metadata.name}') -- bash
 ```
 
 #### Ceph Commands
@@ -110,13 +180,13 @@ There are several common causes for the mons failing to form quorum:
 * The operator pod does not have network connectivity to the mon pod(s). The network may be configured incorrectly.
 * One or more mon pods are in running state, but the operator log shows they are not able to form quorum
 * A mon is using configuration from a previous installation. See the [cleanup guide](../Storage-Configuration/ceph-teardown.md#delete-the-data-on-hosts)
-  for cleaning the previous cluster.
+    for cleaning the previous cluster.
 * A firewall may be blocking the ports required for the Ceph mons to form quorum. Ensure ports 6789 and 3300 are enabled.
-  See the [Ceph networking guide](https://docs.ceph.com/en/latest/rados/configuration/network-config-ref/) for more details.
+    See the [Ceph networking guide](https://docs.ceph.com/en/latest/rados/configuration/network-config-ref/) for more details.
 * There may be MTU mismatch between different networking components. Some networks may be more
-  susceptible to mismatch than others. If Kubernetes CNI or hosts enable jumbo frames (MTU 9000),
-  Ceph will use large packets to maximize network bandwidth. If other parts of the networking chain
-  don't support jumbo frames, this could result in lost or rejected packets unexpectedly.
+    susceptible to mismatch than others. If Kubernetes CNI or hosts enable jumbo frames (MTU 9000),
+    Ceph will use large packets to maximize network bandwidth. If other parts of the networking chain
+    don't support jumbo frames, this could result in lost or rejected packets unexpectedly.
 
 #### Operator fails to connect to the mon
 
@@ -288,7 +358,7 @@ The common misconfigurations include:
 * If `useAllDevices: true`, Rook expects to find local devices attached to the nodes. If no devices are found, no OSDs will be created.
 * If `useAllDevices: false`, OSDs will only be created if `deviceFilter` is specified.
 * Only local devices attached to the nodes will be configurable by Rook. In other words, the devices must show up under `/dev`.
-  * The devices must not have any partitions or filesystems on them. Rook will only configure raw devices. Partitions are not yet supported.
+    * The devices must not have any partitions or filesystems on them. Rook will only configure raw devices. Partitions are not yet supported.
 
 ## OSD pods are failing to start
 
@@ -655,16 +725,16 @@ As an example, you may have `/dev/sdb` with two unexpected partitions (`/dev/sdb
 as well as a second corrupted disk `/dev/sde` with one unexpected partition (`/dev/sde2`).
 
 1. First, remove the OSDs associated with `/dev/sdb`, `/dev/sdb2`, and `/dev/sdb3`. There might be
-   only one, or up to 3 OSDs depending on how your system was affected. Again see the
-   [OSD management doc](../Storage-Configuration/Advanced/ceph-osd-mgmt.md#remove-an-osd).
+    only one, or up to 3 OSDs depending on how your system was affected. Again see the
+    [OSD management doc](../Storage-Configuration/Advanced/ceph-osd-mgmt.md#remove-an-osd).
 2. Use `dd` to wipe the first sectors of the partitions followed by the disk itself. E.g.,
     * `dd if=/dev/zero of=/dev/sdb2 bs=1M`
     * `dd if=/dev/zero of=/dev/sdb3 bs=1M`
     * `dd if=/dev/zero of=/dev/sdb bs=1M`
 3. Then wipe clean `/dev/sdb` to prepare it for a new OSD.
-   See [the teardown document](../Storage-Configuration/ceph-teardown.md#zapping-devices) for details.
+    See [the teardown document](../Storage-Configuration/ceph-teardown.md#zapping-devices) for details.
 4. After this, scale up the Rook operator to deploy a new OSD to `/dev/sdb`. This will allow Ceph to
-   use `/dev/sdb` for data recovery and replication while the next OSDs are removed.
+    use `/dev/sdb` for data recovery and replication while the next OSDs are removed.
 5. Now Repeat steps 1-4 for `/dev/sde` and `/dev/sde2`, and continue for any other corrupted disks.
 
 If your Rook cluster does not have any critical data stored in it, it may be simpler to
@@ -707,3 +777,36 @@ data: {}
 ```
 
 If the ConfigMap exists, remove any keys that you wish to configure through the environment.
+
+## The cluster is in an unhealthy state or fails to configure when LimitNOFILE=infinity in containerd
+
+### Symptoms
+
+When trying to create a new deployment, Ceph mons keep crashing and the cluster fails to configure or remains in an unhealthy state. The nodes' CPUs are stuck at 100%.
+
+```console
+NAME        DATADIRHOSTPATH   MONCOUNT   AGE    PHASE   MESSAGE                                    HEALTH       EXTERNAL   FSID
+rook-ceph   /var/lib/rook      3         4m6s   Ready   Failed to configure ceph cluster           HEALTH_ERR
+```
+
+### Solution
+
+Before systemd v240, systemd would leave `fs.nr_open` as-is because it had no mechanism to set a safe upper limit for it. The kernel hard-coded value for the default number of max open files is **1048576**. Starting from systemd v240, when `LimitNOFILE=infinity` is specified in the containerd.service configuration, this value will typically be set to **~1073741816** (INT_MAX for x86_64 divided by two).
+
+To fix this, set LimitNOFILE in the systemd service configuration to **1048576**.
+
+Create an override.conf file with the new LimitNOFILE value:
+
+```console
+$ vim /etc/systemd/system/containerd.service.d/override.conf
+[Service]
+LimitNOFILE=1048576
+```
+
+Reload systemd manager configuration, restart containerd and restart all monitors deployments:
+
+```console
+$ systemctl daemon-reload
+$ systemctl restart containerd
+$ kubectl rollout restart deployment rook-ceph-mon-a rook-ceph-mon-b rook-ceph-mon-c -n rook-ceph
+```
